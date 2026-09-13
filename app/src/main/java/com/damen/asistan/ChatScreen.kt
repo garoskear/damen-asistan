@@ -31,6 +31,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -227,6 +228,11 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
     val sessionLabel = client.sessionName
         ?: client.sessionFile?.split('/', '\\')?.lastOrNull()?.removeSuffix(".jsonl") ?: "—"
     val stripVisible = statuses.isNotEmpty() || widgets.isNotEmpty() || stats != null || client.modelId != null
+    // Strip scroll durumları ekran seviyesinde: koşul açılıp kapanınca pozisyon sıfırlanmasın.
+    val stripVScroll = rememberScrollState()
+    val stripHScroll = rememberScrollState()
+    // Klavye açıkken navigationBars inset'i yerine ime inset'i kullan (bar klavyenin üstünde kalsın)
+    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -310,7 +316,10 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
                 Divider(color = Damen.LineDim, thickness = 1.dp)
             },
             bottomBar = {
-                Column(modifier = Modifier.background(Damen.Bg).windowInsetsPadding(WindowInsets.navigationBars)) {
+                Column(
+                    modifier = Modifier.background(Damen.Bg)
+                        .then(if (imeBottom > 0) Modifier.imePadding() else Modifier.windowInsetsPadding(WindowInsets.navigationBars)),
+                ) {
                     if (qSteer > 0 || qFollow > 0) {
                         val parts = mutableListOf<String>()
                         if (qSteer > 0) parts += "▲ $qSteer ${Lang.t("steer")}"
@@ -321,11 +330,11 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
                     if (stripVisible) {
                         Column(
                             modifier = Modifier.heightIn(max = 88.dp)
-                                .verticalScroll(rememberScrollState())
+                                .verticalScroll(stripVScroll)
                                 .padding(horizontal = 12.dp, vertical = 5.dp),
                         ) {
                             if (statuses.isNotEmpty() || widgets.isNotEmpty()) {
-                                Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Row(modifier = Modifier.horizontalScroll(stripHScroll), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                                     statuses.forEach { Text(it, fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Dim) }
                                     widgets.forEach { Text(it, fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Dim) }
                                 }
