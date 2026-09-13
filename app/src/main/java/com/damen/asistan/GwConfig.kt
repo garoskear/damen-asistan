@@ -78,8 +78,8 @@ data class AsistanConfig(
                     list += Shortcut(
                         id = s.optString("id", "s$i"),
                         label = s.optString("label", "s$i"),
-                        packageName = s.optString("packageName", "").ifBlank { null },
-                        action = s.optString("action", "").ifBlank { null },
+                        packageName = s.optString("packageName", "").takeIf { it.isNotBlank() },
+                        action = s.optString("action", "").takeIf { it.isNotBlank() },
                     )
                 }
             }
