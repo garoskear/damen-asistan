@@ -1,21 +1,35 @@
 package com.damen.asistan
 
+import android.Manifest
+import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -25,7 +39,9 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -39,40 +55,78 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.Locale
 
 /**
  * Varsayılan asistan çağrısı (ASSIST) buraya düşer. Yarı saydam:
- * altta mesaj barı + gönder, en sağda dikey pill kısayol barı, barın solunda + popup'ı.
- * Asistan konuşmaları normal session'dır — gönderim ana sohbetteki oturuma gider.
+ * - Açılışta arka planda anında ekran görüntüsü yakalar (asistan arayüzü gelmeden).
+ * - Kullanıcı isterse tek dokunuşla son çekilen ekran görüntüsünü mesaja ekler.
+ * - Dahili mikrofon (SpeechRecognizer) ile sesli mesaj desteği.
+ * - WebSocket önceden bağlanır, gönderim anında ana sohbete akıcı geçiş yapılır.
  */
 class AssistantActivity : ComponentActivity() {
 
     private val client by lazy { GwClient() }
     internal var shotReceiver: BroadcastReceiver? = null
+    private var lastAutoShotPath: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val cfg = AsistanConfig.load(this)
+
+        // Asistan açıldığı an arka planda sessizce ekran görüntüsü al
+        PowerService.captureScreen { path ->
+            lastAutoShotPath = path
+        }
+
+        // Gateway bağlantısını önceden kur — kullanıcı yazarken WS hazır olsun
+        if (cfg.token.isNotBlank() && cfg.token != "BURAYA_TOKEN") {
+            client.connect(cfg.token)
+        }
+
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Color.Transparent, surface = Color.Transparent)) {
                 Surface(Modifier.fillMaxSize(), color = Color.Transparent) {
-                    AssistantScreen(cfg, client,
-                        onDone = { finish() },
-                        onOpenMain = { startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); finish() },
+                    AssistantScreen(
+                        cfg = cfg,
+                        client = client,
+                        initialAutoShot = lastAutoShotPath,
+                        onDone = { cleanTempFiles(); finish() },
+                        onOpenMain = {
+                            cleanTempFiles()
+                            val it = Intent(this, MainActivity::class.java).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            }
+                            startActivity(it)
+                            overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
+                            finish()
+                        },
                     )
                 }
             }
         }
     }
 
+    private fun cleanTempFiles() {
+        try {
+            lastAutoShotPath?.let { File(it).delete() }
+            File(cacheDir, "auto_shot.png").delete()
+        } catch (_: Exception) { }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // Tekrar çağrılırsa yeni ekran karesini al
+        PowerService.captureScreen { path ->
+            lastAutoShotPath = path
+        }
     }
 
     override fun onDestroy() {
         try { shotReceiver?.let { unregisterReceiver(it) } } catch (_: Exception) { }
         shotReceiver = null
+        cleanTempFiles()
         client.disconnect()
         super.onDestroy()
     }
@@ -87,28 +141,142 @@ class AssistantActivity : ComponentActivity() {
 private fun AssistantScreen(
     cfg: AsistanConfig,
     client: GwClient,
+    initialAutoShot: String?,
     onDone: () -> Unit,
     onOpenMain: () -> Unit,
 ) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val ctx = LocalContext.current
     val act = ctx as? AssistantActivity
     val scope = rememberCoroutineScope()
     val prefs = remember { ctx.getSharedPreferences("damen", Context.MODE_PRIVATE) }
 
     var input by remember { mutableStateOf("") }
     var pendingFiles by remember { mutableStateOf(JSONArray()) }
+    var autoShotFile by remember { mutableStateOf(initialAutoShot) }
     var plusOpen by remember { mutableStateOf(false) }
     var hidden by remember { mutableStateOf(false) }
     var sending by remember { mutableStateOf(false) }
+    var isListening by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
     var shotJob by remember { mutableStateOf<Job?>(null) }
+
+    // Eğer initialAutoShot başlangıçta henüz null idiyse, 500ms içinde kontrol et
+    LaunchedEffect(Unit) {
+        if (autoShotFile == null) {
+            repeat(10) {
+                delay(100)
+                val f = File(ctx.cacheDir, "auto_shot.png")
+                if (f.exists() && f.length() > 0) {
+                    autoShotFile = f.absolutePath
+                    return@repeat
+                }
+            }
+        }
+    }
 
     fun showToast(t: String) {
         toast = t
         scope.launch { delay(2500); if (toast == t) toast = null }
     }
 
-    val cropLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+    // Mikrofon ve konuşma tanıma (SpeechRecognizer)
+    var recognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
+
+    fun stopListening() {
+        try {
+            recognizer?.stopListening()
+            recognizer?.destroy()
+        } catch (_: Exception) { }
+        recognizer = null
+        isListening = false
+    }
+
+    fun startListening() {
+        if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
+            showToast("ses tanıma servisi bulunamadı")
+            return
+        }
+        stopListening()
+        val r = SpeechRecognizer.createSpeechRecognizer(ctx)
+        recognizer = r
+        r.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) { isListening = true }
+            override fun onBeginningOfSpeech() { }
+            override fun onRmsChanged(rmsdB: Float) { }
+            override fun onBufferReceived(buffer: ByteArray?) { }
+            override fun onEndOfSpeech() { isListening = false }
+            override fun onError(error: Int) { isListening = false }
+            override fun onResults(results: Bundle?) {
+                isListening = false
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val spoken = matches?.firstOrNull() ?: ""
+                if (spoken.isNotBlank()) {
+                    input = if (input.isBlank()) spoken else "$input $spoken"
+                }
+            }
+            override fun onPartialResults(partialResults: Bundle?) {
+                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val spoken = matches?.firstOrNull() ?: ""
+                if (spoken.isNotBlank()) {
+                    // Anlık konuşmayı göster
+                }
+            }
+            override fun onEvent(eventType: Int, params: Bundle?) { }
+        })
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        }
+        try {
+            r.startListening(intent)
+            isListening = true
+        } catch (_: Exception) {
+            isListening = false
+            showToast("mikrofon başlatılamadı")
+        }
+    }
+
+    val micPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) startListening()
+        else showToast("mikrofon izni gerekli")
+    }
+
+    fun toggleMic() {
+        if (isListening) {
+            stopListening()
+        } else {
+            val hasPerm = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            if (hasPerm) startListening()
+            else micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // Ekran görüntüsü ekleme fonksiyonu
+    fun attachAutoScreenshot() {
+        val shotPath = autoShotFile ?: File(ctx.cacheDir, "auto_shot.png").takeIf { it.exists() }?.absolutePath
+        if (shotPath != null) {
+            try {
+                val bytes = File(shotPath).readBytes()
+                if (bytes.isNotEmpty() && bytes.size <= 20 * 1024 * 1024) {
+                    val merged = JSONArray()
+                    for (i in 0 until pendingFiles.length()) merged.put(pendingFiles.get(i))
+                    merged.put(
+                        JSONObject().put("name", "ekran.png").put("mime", "image/png")
+                            .put("data", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)),
+                    )
+                    pendingFiles = merged
+                    showToast("+ ekran görüntüsü eklendi")
+                    return
+                }
+            } catch (_: Exception) { }
+        }
+        showToast("ekran görüntüsü bulunamadı")
+    }
+
+    val cropLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { res ->
         hidden = false
@@ -133,11 +301,10 @@ private fun AssistantScreen(
         }
     }
 
-    val mpLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+    val mpLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { res ->
         if (res.resultCode == ComponentActivity.RESULT_OK && res.data != null) {
-            // Asistanı gizle (kareye girmesin) → servis yakalar → yayınla CropActivity'yi aç
             hidden = true
             val recv = object : BroadcastReceiver() {
                 override fun onReceive(c: Context?, intent: Intent?) {
@@ -165,7 +332,7 @@ private fun AssistantScreen(
         }
     }
 
-    val filePicker = androidx.activity.compose.rememberLauncherForActivityResult(
+    val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris: List<Uri> ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
@@ -199,6 +366,7 @@ private fun AssistantScreen(
         }
     }
 
+    // Akıcı ve anlık gönderim: bekletmeden prompt yolla ve ana sohbet ekranına yumuşakça geç
     fun submit() {
         val text = input.trim()
         if (sending) return
@@ -207,52 +375,45 @@ private fun AssistantScreen(
             showToast("önce ana uygulamadan token gir")
             return
         }
+        stopListening()
         sending = true
         plusOpen = false
         val files = pendingFiles
+
         scope.launch {
             try {
-                client.connect(cfg.token)
-                val hello = withTimeoutOrNull(15000) { client.sessionState.first { it.sessionFile != null } }
-                if (hello == null) { showToast("gateway yok"); sending = false; return@launch }
+                // Eğer soket henüz açık değilse hızlıca bağlanmasını bekle (en fazla 2 sn)
+                if (client.conn.value != Conn.Open) {
+                    client.connect(cfg.token)
+                    withTimeoutOrNull(2000) { client.conn.first { it == Conn.Open } }
+                }
+                // Oturumu doğrula
                 val saved = prefs.getString("assistant_session", null)
-                var switched = false
                 if (!saved.isNullOrBlank()) {
                     client.switchSession(saved)
-                    switched = withTimeoutOrNull(10000) {
-                        client.sessionState.first { it.sessionFile == saved }
-                        true
-                    } ?: false
                 }
-                if (!switched) {
-                    client.newSession()
-                    withTimeoutOrNull(15000) { client.sessionState.first { it.sessionFile != null } }
-                }
+                // Mesajı fırlat
                 client.sendPrompt(text, files)
-                try { prefs.edit().putString("assistant_session", client.sessionFile).apply() } catch (_: Exception) { }
-                input = ""
-                pendingFiles = JSONArray()
-                showToast("gönderildi ✓")
-                delay(600)
+                // Hemen ana uygulamaya geç — akışkan, gecikmesiz
                 onOpenMain()
             } catch (_: Exception) {
                 showToast("gönderilemedi")
-            } finally {
                 sending = false
             }
         }
     }
 
     if (hidden) {
-        // Yakalama anı: tamamen şeffaf (kareye girmeyelim)
         Box(Modifier.fillMaxSize())
         return
     }
 
-    Box(Modifier.fillMaxSize().clickable(
-        interactionSource = remember { MutableInteractionSource() },
-        indication = null,
-    ) { onDone() }) {
+    Box(
+        modifier = Modifier.fillMaxSize().clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+        ) { onDone() },
+    ) {
         // Sağda dikey pill bar (config.json kısayolları)
         Column(
             modifier = Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)
@@ -289,29 +450,46 @@ private fun AssistantScreen(
         ) {
             if (plusOpen) {
                 Column(Modifier.fillMaxWidth().padding(10.dp).background(Damen.Surface).border(1.dp, Damen.Line)) {
-                    PlusRow("Ekran görüntüsü", "asistan dışı ekranı çek + kırp") {
+                    PlusRow("Ekran Görüntüsü Ekle", "açılışta otomatik çekilen ekranı mesaja ekle") {
                         plusOpen = false
-                        val mp = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                        mpLauncher.launch(mp.createScreenCaptureIntent())
+                        attachAutoScreenshot()
                     }
-                    PlusRow("Dosya", "mesaja dosya ekle") {
+                    PlusRow("Kırparak Yakala", "ekran görüntüsünü seçip kırparak ekle") {
+                        plusOpen = false
+                        val shotPath = autoShotFile ?: File(ctx.cacheDir, "auto_shot.png").takeIf { it.exists() }?.absolutePath
+                        if (shotPath != null) {
+                            cropLauncher.launch(Intent(ctx, CropActivity::class.java).putExtra(CropActivity.EXTRA_PATH, shotPath))
+                        } else {
+                            val mp = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                            mpLauncher.launch(mp.createScreenCaptureIntent())
+                        }
+                    }
+                    PlusRow("Dosya Seç", "cihazdan dosya veya resim ekle") {
                         plusOpen = false
                         filePicker.launch(arrayOf("*/*"))
                     }
                 }
             }
+
             if (pendingFiles.length() > 0) {
-                ChipRow(client.pendingNames(pendingFiles)) { idx ->
-                    val next = JSONArray()
-                    for (i in 0 until pendingFiles.length()) if (i != idx) next.put(pendingFiles.get(i))
-                    pendingFiles = next
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    ChipRow(client.pendingNames(pendingFiles)) { idx ->
+                        val next = JSONArray()
+                        for (i in 0 until pendingFiles.length()) if (i != idx) next.put(pendingFiles.get(i))
+                        pendingFiles = next
+                    }
                 }
             }
+
             Row(
-                modifier = Modifier.fillMaxWidth().padding(8.dp, 10.dp),
+                modifier = Modifier.fillMaxWidth().padding(8.dp, 8.dp),
                 verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                // + menüsü
                 Box(
                     modifier = Modifier.height(48.dp).width(36.dp).clickable(
                         interactionSource = remember { MutableInteractionSource() },
@@ -319,13 +497,32 @@ private fun AssistantScreen(
                     ) { plusOpen = !plusOpen },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(if (plusOpen) "✕" else "＋", fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = Damen.Dim)
+                    Text(if (plusOpen) "✕" else "＋", fontFamily = FontFamily.Monospace, fontSize = 15.sp, color = Damen.Dim)
                 }
+
+                // Hızlı ekran görüntüsü ekleme tuşu (otomatik çekilen kareyi hemen ekler)
+                Box(
+                    modifier = Modifier.height(48.dp).width(36.dp).clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { attachAutoScreenshot() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("⛶", fontFamily = FontFamily.Monospace, fontSize = 16.sp, color = if (autoShotFile != null) Damen.Fg else Damen.Faint)
+                }
+
+                // Metin alanı
                 TextField(
                     value = input,
                     onValueChange = { input = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("pi'ye yaz…", fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = Damen.Faint) },
+                    placeholder = {
+                        Text(
+                            if (isListening) "dinleniyor…" else "pi'ye yaz…",
+                            fontFamily = FontFamily.Monospace, fontSize = 14.sp,
+                            color = if (isListening) Damen.Accent else Damen.Faint,
+                        )
+                    },
                     textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, lineHeight = 20.sp, color = Damen.Fg),
                     maxLines = 5,
                     colors = TextFieldDefaults.colors(
@@ -335,14 +532,39 @@ private fun AssistantScreen(
                         unfocusedIndicatorColor = Color.Transparent,
                     ),
                 )
+
+                // Mikrofon tuşu
                 Box(
-                    modifier = Modifier.height(48.dp).width(44.dp)
-                        .border(1.dp, if (sending) Damen.Line else Damen.Accent)
-                        .clickable(enabled = !sending) { submit() },
+                    modifier = Modifier.height(48.dp).width(40.dp)
+                        .border(1.dp, if (isListening) Damen.Accent else Damen.Line)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { toggleMic() },
                     contentAlignment = Alignment.Center,
                 ) {
-                    if (sending) Text("…", fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = Damen.Dim)
-                    else Box(Modifier.size(14.dp).background(Damen.Accent))
+                    if (isListening) {
+                        val inf = rememberInfiniteTransition(label = "mic")
+                        val a by inf.animateFloat(1f, 0.3f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "mic")
+                        Text("🎙", fontSize = 16.sp, modifier = Modifier.alpha(a))
+                    } else {
+                        Text("🎙", fontSize = 16.sp, color = Damen.Dim)
+                    }
+                }
+
+                // Gönder tuşu
+                val canSend = input.trim().isNotEmpty() || pendingFiles.length() > 0
+                Box(
+                    modifier = Modifier.height(48.dp).width(44.dp)
+                        .border(1.dp, if (canSend) Damen.Accent else Damen.Line)
+                        .clickable(enabled = canSend && !sending) { submit() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (sending) {
+                        Text("…", fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = Damen.Dim)
+                    } else {
+                        Box(Modifier.size(14.dp).background(if (canSend) Damen.Accent else Damen.Faint))
+                    }
                 }
             }
         }

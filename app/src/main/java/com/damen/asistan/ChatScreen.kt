@@ -1,9 +1,16 @@
 package com.damen.asistan
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -44,6 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -66,6 +74,12 @@ private fun srcTag(s: String) = when (s) {
     "skill" -> "SKILL"
     "builtin" -> "SYS"
     else -> s.uppercase().take(4)
+}
+
+/** Akış öğesi: ardışık aynı roldeki mesajlar tek turn grubunda birleşir. */
+private sealed interface FeedItem {
+    data class Group(val role: String, val msgs: List<ChatMsg>, val endIdx: Int) : FeedItem
+    data class Bash(val msg: ChatMsg, val endIdx: Int) : FeedItem
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -106,6 +120,7 @@ fun ChatScreen(
     var modelSheet by remember { mutableStateOf(false) }
     var modelQuery by remember { mutableStateOf("") }
     var slashActive by remember { mutableStateOf(0) }
+    var isListening by remember { mutableStateOf(false) }
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val listState = rememberLazyListState()
@@ -206,6 +221,77 @@ fun ChatScreen(
         }
     }
 
+    // Mikrofon ve konuşma tanıma (SpeechRecognizer)
+    var recognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
+
+    fun stopListening() {
+        try {
+            recognizer?.stopListening()
+            recognizer?.destroy()
+        } catch (_: Exception) { }
+        recognizer = null
+        isListening = false
+    }
+
+    fun startListening() {
+        if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
+            client.toast("ses tanıma servisi bulunamadı", "warning")
+            return
+        }
+        stopListening()
+        val r = SpeechRecognizer.createSpeechRecognizer(ctx)
+        recognizer = r
+        r.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) { isListening = true }
+            override fun onBeginningOfSpeech() { }
+            override fun onRmsChanged(rmsdB: Float) { }
+            override fun onBufferReceived(buffer: ByteArray?) { }
+            override fun onEndOfSpeech() { isListening = false }
+            override fun onError(error: Int) { isListening = false }
+            override fun onResults(results: Bundle?) {
+                isListening = false
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val spoken = matches?.firstOrNull() ?: ""
+                if (spoken.isNotBlank()) {
+                    val cur = inputVal.text
+                    val next = if (cur.isBlank()) spoken else "$cur $spoken"
+                    inputVal = TextFieldValue(next, TextRange(next.length))
+                }
+            }
+            override fun onPartialResults(partialResults: Bundle?) { }
+            override fun onEvent(eventType: Int, params: Bundle?) { }
+        })
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        }
+        try {
+            r.startListening(intent)
+            isListening = true
+        } catch (_: Exception) {
+            isListening = false
+            client.toast("mikrofon başlatılamadı", "error")
+        }
+    }
+
+    val micPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) startListening()
+        else client.toast("mikrofon izni gerekli", "warning")
+    }
+
+    fun toggleMic() {
+        if (isListening) {
+            stopListening()
+        } else {
+            val hasPerm = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            if (hasPerm) startListening()
+            else micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
@@ -295,6 +381,7 @@ fun ChatScreen(
 
     fun submit(raw: String) {
         val text = raw.trim()
+        stopListening()
         if (streaming && text.isEmpty()) { client.abort(); return }
         if (text.isEmpty() && pendingFiles.length() == 0) return
 
@@ -603,6 +690,25 @@ fun ChatScreen(
                             }
                         }
 
+                        // Mikrofon tuşu
+                        Box(
+                            modifier = Modifier.height(BtnH).width(36.dp)
+                                .border(1.dp, if (isListening) Damen.Accent else Damen.Line)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) { toggleMic() },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (isListening) {
+                                val inf = rememberInfiniteTransition(label = "mic_main")
+                                val a by inf.animateFloat(1f, 0.3f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "mic_main")
+                                Text("🎙", fontSize = 16.sp, modifier = Modifier.alpha(a))
+                            } else {
+                                Text("🎙", fontSize = 16.sp, color = Damen.Dim)
+                            }
+                        }
+
                         val canSend = streaming || inputVal.text.trim().isNotEmpty() || pendingFiles.length() > 0
                         Box(
                             modifier = Modifier.height(BtnH).width(44.dp)
@@ -634,20 +740,51 @@ fun ChatScreen(
                         Text(Lang.t("emptyHint"), fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 2.5.sp, color = Damen.Faint)
                     }
                 } else {
+                    // pi SDK thinking/toolCall/text'i ayrı mesajlara böler; ardışık aynı rol
+                    // tek numaralı blokta gruplanır (her parça ayrı mesaj gibi durmaz).
+                    val feed = remember(messages) {
+                        val out = mutableListOf<FeedItem>()
+                        var curRole: String? = null
+                        var curList = mutableListOf<ChatMsg>()
+                        var curEnd = -1
+                        fun flush() {
+                            if (curRole != null && curList.isNotEmpty()) {
+                                out += FeedItem.Group(curRole!!, curList.toList(), curEnd)
+                                curList = mutableListOf()
+                            }
+                            curRole = null
+                        }
+                        messages.forEachIndexed { mi, m ->
+                            if (m.role == "user" || m.role == "assistant") {
+                                if (curRole == m.role) {
+                                    curList += m; curEnd = mi
+                                } else {
+                                    flush(); curRole = m.role; curList = mutableListOf(m); curEnd = mi
+                                }
+                            } else if (m.role == "bashExecution") {
+                                flush(); out += FeedItem.Bash(m, mi)
+                            }
+                        }
+                        flush()
+                        out
+                    }
                     var num = 0
                     var noticeIdx = 0
                     val sortedNotices = notices
 
                     LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
-                        messages.forEachIndexed { mi, m ->
-                            if (m.role == "user" || m.role == "assistant") {
-                                num++
-                                val n = num
-                                item(key = "m$mi") { Turn(n, m) }
-                            } else if (m.role == "bashExecution") {
-                                item(key = "m$mi") { BashTurn(num + 1, m) }
+                        feed.forEachIndexed { gi, g ->
+                            when (g) {
+                                is FeedItem.Group -> {
+                                    num++
+                                    val n = num
+                                    item(key = "g$gi") { Turn(n, g.role, g.msgs) }
+                                }
+                                is FeedItem.Bash -> {
+                                    item(key = "g$gi") { BashTurn(num + 1, g.msg) }
+                                }
                             }
-                            while (noticeIdx < sortedNotices.size && sortedNotices[noticeIdx].at <= mi + 1) {
+                            while (noticeIdx < sortedNotices.size && sortedNotices[noticeIdx].at <= g.endIdx + 1) {
                                 val nt = sortedNotices[noticeIdx]
                                 item(key = "n$noticeIdx") { NoticeRow(nt) }
                                 noticeIdx++
@@ -760,30 +897,32 @@ private fun RecDot() {
 }
 
 @Composable
-private fun Turn(num: Int, m: ChatMsg) {
+private fun Turn(num: Int, role: String, msgs: List<ChatMsg>) {
     Column(modifier = Modifier.padding(12.dp, 14.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(num.toString().padStart(2, '0'), fontFamily = Damen.Mono, fontSize = 10.sp, color = Damen.Faint)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Micro(if (m.role == "user") Lang.t("you") else Lang.t("assistant"), Damen.Dim)
-                Box(modifier = Modifier.size(6.dp).background(if (m.role == "user") Damen.Dim else Damen.Accent))
+                Micro(if (role == "user") Lang.t("you") else Lang.t("assistant"), Damen.Dim)
+                Box(modifier = Modifier.size(6.dp).background(if (role == "user") Damen.Dim else Damen.Accent))
             }
         }
         Spacer(Modifier.height(6.dp))
-        m.parts.forEach { p ->
-            when (p) {
-                is Part.Text -> if (p.text.isNotBlank()) MdBody(p.text)
-                is Part.Thinking -> {
-                    var ex by remember { mutableStateOf(false) }
-                    ThinkingBlock(p.thinking, ex) { ex = !ex }
+        msgs.forEach { m ->
+            m.parts.forEach { p ->
+                when (p) {
+                    is Part.Text -> if (p.text.isNotBlank()) MdBody(p.text)
+                    is Part.Thinking -> {
+                        var ex by remember { mutableStateOf(false) }
+                        ThinkingBlock(p.thinking, ex) { ex = !ex }
+                    }
+                    is Part.ToolCall -> ToolCard(p.name, p.args, p.argsRaw, p.output, "end", false, 0)
+                    is Part.Image -> {
+                        val ext = p.mime?.split("/")?.getOrNull(1) ?: ""
+                        ChipRow(listOf(if (ext.isNotEmpty()) "image.$ext" else "image"))
+                    }
                 }
-                is Part.ToolCall -> ToolCard(p.name, p.args, p.argsRaw, p.output, "end", false, 0)
-                is Part.Image -> {
-                    val ext = p.mime?.split("/")?.getOrNull(1) ?: ""
-                    ChipRow(listOf(if (ext.isNotEmpty()) "image.$ext" else "image"))
-                }
+                Spacer(Modifier.height(6.dp))
             }
-            Spacer(Modifier.height(6.dp))
         }
     }
     Divider(color = Damen.LineDim, thickness = 1.dp)

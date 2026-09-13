@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Android 15+ LAN erişimi için (Kai'deki desen) -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <!-- Sesli mesaj / mikrofon için -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Ekran yakalama servisi (API 34'te mediaProjection tipi şart) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
