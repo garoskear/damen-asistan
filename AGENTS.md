@@ -62,3 +62,19 @@ MainActivity (Compose, Nothing tema)
 - Kurulan skill'ler: `hallmark` (tasarım), `mobile-android-design` (Compose/M3).
 - Bilinen eksik: donanım klavyesiz geçmiş gezinmesi (sadece fiziksel ↑/↓), pencere başına
   thinking açık/kapalı durumu (web'de live'da seg'de yaşar — burada da seg'de).
+
+## Asistan katmanı (2026-09-13, orijinal vizyonun tamamı)
+- `AssistantActivity` (ASSIST intent, translucent, singleInstance, recents dışı): altta
+  `[+] [alan] [gönder]`, en sağda dikey pill (config.json shortcuts), `+` popup'ı
+  (Ekran görüntüsü / Dosya). Boş alana dokun = kapat.
+- Screenshot akışı: MediaProjection izni → asistan gizlenir (`hidden`) → `CaptureService`
+  (foreground, mediaProjection tipi, API 34 izni) tek kare yakalar → `SHOT` yayını →
+  asistan `CropActivity`'yi sonuç için açar → sürükle-çiz/taşı kırpma → Ekle (eke düşer).
+- Gönderim: token + hello beklenir → kayıtlı `assistant_session` varsa switch, yoksa
+  new_session → prompt → session yolu saklanır → ana sohbet açılır. Asistan konuşmaları
+  normal session'dır (aynı store).
+- Pill: `termux` → paket launch; `power_dialog` → `PowerService` (erişilebilirlik,
+  GLOBAL_ACTION_POWER_DIALOG), kapalıysa ayar ekranı + toast. Kısayollar config.json'dan.
+- Kai desenleri: MainActivity'de SEND (text/plain) paylaşımı alana doldurur; ASSIST/SEND
+  tüketilince action/extra temizlenir (rotasyonda tekrar uygulanmaz).
+- İzinler: FOREGROUND_SERVICE + FOREGROUND_SERVICE_MEDIA_PROJECTION; erişilebilirlik xml'i.
