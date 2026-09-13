@@ -213,20 +213,20 @@ private fun AssistantScreen(
         scope.launch {
             try {
                 client.connect(cfg.token)
-                val hello = withTimeoutOrNull(15000) { client.stateTick.first { client.sessionFile != null } }
+                val hello = withTimeoutOrNull(15000) { client.sessionState.first { it.sessionFile != null } }
                 if (hello == null) { showToast("gateway yok"); sending = false; return@launch }
                 val saved = prefs.getString("assistant_session", null)
                 var switched = false
                 if (!saved.isNullOrBlank()) {
                     client.switchSession(saved)
                     switched = withTimeoutOrNull(10000) {
-                        client.stateTick.first { client.sessionFile == saved }
+                        client.sessionState.first { it.sessionFile == saved }
                         true
                     } ?: false
                 }
                 if (!switched) {
                     client.newSession()
-                    withTimeoutOrNull(15000) { client.stateTick.first { client.sessionFile != null } }
+                    withTimeoutOrNull(15000) { client.sessionState.first { it.sessionFile != null } }
                 }
                 client.sendPrompt(text, files)
                 try { prefs.edit().putString("assistant_session", client.sessionFile).apply() } catch (_: Exception) { }

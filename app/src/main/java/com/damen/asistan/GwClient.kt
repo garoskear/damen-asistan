@@ -236,6 +236,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
     private val _statuses = MutableStateFlow<List<String>>(emptyList()); val statuses: StateFlow<List<String>> = _statuses
     private val _widgets = MutableStateFlow<List<String>>(emptyList()); val widgets: StateFlow<List<String>> = _widgets
     private val _sessionState = MutableStateFlow(SessionState()); val sessionState: StateFlow<SessionState> = _sessionState
+    private val _stateTick = MutableStateFlow(0); val stateTick: StateFlow<Int> = _stateTick
 
     var viewSlot: Int? = null
         private set
@@ -387,6 +388,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
 
     private fun applyState(s: JSONObject?) {
         if (s == null) return
+        _stateTick.value++
         val sName = s.safeNull("sessionName")
         val sFile = s.safeNull("sessionFile")
         val m = s.optJSONObject("model")
