@@ -7,19 +7,24 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.FocusInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -28,20 +33,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -55,13 +60,22 @@ private fun fmtTime(ms: Long): String {
 }
 
 private fun srcTag(s: String) = when (s) {
-    "extension" -> "EXT"; "prompt" -> "PROMPT"; "skill" -> "SKILL"; "builtin" -> "SYS"
+    "extension" -> "EXT"
+    "prompt" -> "PROMPT"
+    "skill" -> "SKILL"
+    "builtin" -> "SYS"
     else -> s.uppercase().take(4)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(client: GwClient, token: String, initialText: String = "", onConsumedShare: () -> Unit = {}, onTokenNeeded: () -> Unit) {
+fun ChatScreen(
+    client: GwClient,
+    token: String,
+    initialText: String = "",
+    onConsumedShare: () -> Unit = {},
+    onTokenNeeded: () -> Unit,
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val prefs = remember { ctx.getSharedPreferences("damen", Context.MODE_PRIVATE) }
@@ -86,15 +100,62 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
     val widgets by client.widgets.collectAsState()
     client.stateTick.collectAsState()
 
-    var input by remember { mutableStateOf("") }
+    var inputVal by remember { mutableStateOf(TextFieldValue("")) }
     var pendingFiles by remember { mutableStateOf(JSONArray()) }
     var modelSheet by remember { mutableStateOf(false) }
     var modelQuery by remember { mutableStateOf("") }
     var slashActive by remember { mutableStateOf(0) }
-    var stick by remember { mutableStateOf(true) }
+
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val listState = rememberLazyListState()
+    val inputFocusRequester = remember { FocusRequester() }
+    val inputInteraction = remember { MutableInteractionSource() }
     val clipboard = remember { ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
+
+    // BUG 5: Dibe yakınlık tespiti derivedStateOf ile
+    val isAtBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val total = info.totalItemsCount
+            if (total == 0) true
+            else {
+                val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
+                last.index >= total - 1
+            }
+        }
+    }
+
+    var autoScrollEnabled by remember { mutableStateOf(true) }
+
+    fun scrollToBottom(animate: Boolean = false) {
+        autoScrollEnabled = true
+        scope.launch {
+            val total = listState.layoutInfo.totalItemsCount
+            if (total > 0) {
+                if (animate) listState.animateScrollToItem(total - 1)
+                else listState.scrollToItem(total - 1)
+            }
+        }
+    }
+
+    // Input alanına dokunma/odaklanma -> ANINDA en alta atla
+    LaunchedEffect(inputInteraction) {
+        inputInteraction.interactions.collect { interaction ->
+            if (interaction is PressInteraction.Release || interaction is FocusInteraction.Focus) {
+                scrollToBottom(animate = false)
+            }
+        }
+    }
+
+    // Mesaj veya live geldiğinde otomatik takip
+    LaunchedEffect(messages.size, live.size, notices.size) {
+        if (autoScrollEnabled) {
+            val total = listState.layoutInfo.totalItemsCount
+            if (total > 0) {
+                try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
+            }
+        }
+    }
 
     val history = remember {
         mutableListOf<String>().apply {
@@ -106,22 +167,28 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
     }
     var histIdx by remember { mutableStateOf(-1) }
     var histDraft by remember { mutableStateOf("") }
+
     fun historyPush(text: String) {
         if (text.isBlank()) return
-        history.remove(text); history.add(0, text)
+        history.remove(text)
+        history.add(0, text)
         while (history.size > 50) history.removeLast()
         try { prefs.edit().putString("damen-history", JSONArray(history).toString()).apply() } catch (_: Exception) { }
         histIdx = -1
     }
 
     val sessionKey = "damen-draft:${client.sessionFile ?: client.sessionName ?: "default"}"
-    // Oturum değişince taslağı sakla/geri koy (web applyState deseni)
     var lastKey by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(sessionKey) {
-        if (lastKey == null) { if (input.isEmpty()) input = prefs.getString(sessionKey, "") ?: "" }
-        else if (sessionKey != lastKey) {
-            try { prefs.edit().putString(lastKey, input).apply() } catch (_: Exception) { }
-            input = prefs.getString(sessionKey, "") ?: ""
+        if (lastKey == null) {
+            if (inputVal.text.isEmpty()) {
+                val saved = prefs.getString(sessionKey, "") ?: ""
+                inputVal = TextFieldValue(saved, TextRange(saved.length))
+            }
+        } else if (sessionKey != lastKey) {
+            try { prefs.edit().putString(lastKey, inputVal.text).apply() } catch (_: Exception) { }
+            val saved = prefs.getString(sessionKey, "") ?: ""
+            inputVal = TextFieldValue(saved, TextRange(saved.length))
         }
         lastKey = sessionKey
     }
@@ -140,40 +207,24 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
 
     LaunchedEffect(token) {
         if (token.isBlank()) onTokenNeeded()
-        else { client.connect(token); client.listSessions() }
+        else {
+            client.connect(token)
+            client.listSessions()
+            client.listModels()
+        }
     }
 
-    // Paylaş menüsünden gelen metin: alan boşsa doldur, bir kez (Kai deseni)
     LaunchedEffect(initialText) {
-        if (initialText.isNotBlank() && input.isBlank()) {
-            input = initialText
+        if (initialText.isNotBlank() && inputVal.text.isBlank()) {
+            inputVal = TextFieldValue(initialText, TextRange(initialText.length))
             onConsumedShare()
         }
     }
 
-    // Toast otomatik kapatma (hata 6sn, diğer 3sn)
     toastMsg?.let { tm ->
         LaunchedEffect(tm.id) {
             delay(if (tm.level == "error") 6000 else 3000)
             client.clearToast(tm.id)
-        }
-    }
-
-    // Akan tool kartlarındaki süre hapları kartın kendi sayacında (tüm ekran uyanmaz)
-
-    // Yapışkan kaydırma: layout akışından dibe-yapışık sinyali (sürükleme + içerik değişimi)
-    LaunchedEffect(listState) {
-        snapshotFlow {
-            val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()
-            if (last == null || info.totalItemsCount == 0) true
-            else last.index >= info.totalItemsCount - 1
-        }.collect { atBottom -> stick = atBottom }
-    }
-    LaunchedEffect(messages.size, live, notices.size) {
-        if (stick) {
-            val total = listState.layoutInfo.totalItemsCount
-            if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
         }
     }
 
@@ -187,21 +238,62 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
         } catch (_: Exception) { client.toast(Lang.t("errCopy"), "error") }
     }
 
+    fun executeSlash(name: String, args: String, fullText: String) {
+        historyPush(fullText)
+        inputVal = TextFieldValue("")
+        when (name) {
+            "resume" -> { scope.launch { drawerState.open() }; client.listSessions() }
+            "help" -> { client.showHelp() }
+            "copy" -> { copyLast() }
+            "model" -> {
+                if (args.isEmpty()) {
+                    client.listModels()
+                    modelQuery = ""
+                    modelSheet = true
+                } else {
+                    val parts = args.split('/', limit = 2)
+                    val prov = parts[0].trim()
+                    val id = if (parts.size > 1) parts[1].trim() else prov
+                    client.setModel(prov, id)
+                    client.toast("model: $prov/$id")
+                }
+            }
+            "thinking" -> {
+                if (args in ALL_LEVELS) {
+                    client.setThinking(args)
+                    client.toast("thinking: $args")
+                } else {
+                    client.toast("off|minimal|low|medium|high|xhigh|max", "warning")
+                }
+            }
+            "new" -> { client.newSession() }
+            "clear-queue" -> { client.abort() }
+            else -> {
+                // Diğer komutlar (compact, name, extension/prompt/skill komutları) sunucuya gönderilir
+                val names = client.pendingNames(pendingFiles)
+                val files = pendingFiles
+                pendingFiles = JSONArray()
+                client.optimisticUser(fullText, names)
+                client.sendPrompt(fullText, files)
+            }
+        }
+        try { prefs.edit().remove(sessionKey).apply() } catch (_: Exception) { }
+        scrollToBottom(animate = true)
+    }
+
     fun submit(raw: String) {
         val text = raw.trim()
         if (streaming && text.isEmpty()) { client.abort(); return }
         if (text.isEmpty() && pendingFiles.length() == 0) return
+
         val m = Regex("""^/([^\s/]+)(?:\s+([\s\S]*))?\s*$""").matchEntire(text)
         if (m != null) {
             val name = m.groupValues[1].lowercase()
             val args = m.groupValues[2].trim()
-            historyPush(text)
-            input = ""
-            if (name == "resume") { scope.launch { drawerState.open() }; client.listSessions(); return }
-            if (name == "help") { client.showHelp(); return }
-            if (name == "copy") { copyLast(); return }
-            if (name == "model" && args.isEmpty()) { client.listModels(); modelQuery = ""; modelSheet = true; return }
+            executeSlash(name, args, text)
+            return
         }
+
         val names = client.pendingNames(pendingFiles)
         val files = pendingFiles
         pendingFiles = JSONArray()
@@ -209,20 +301,20 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
         client.optimisticUser(text, names)
         client.sendPrompt(text, files)
         try { prefs.edit().remove(sessionKey).apply() } catch (_: Exception) { }
-        input = ""
+        inputVal = TextFieldValue("")
         if (streaming) client.toast(Lang.t("queued"))
-        stick = true
+        scrollToBottom(animate = true)
     }
 
-    // Slash adayları: ^/[^\s]*$ (trailing space → kapalı)
-    val slashItems = remember(input, commands) {
-        val mm = Regex("""^/([^\s]*)$""").matchEntire(input) ?: return@remember null
+    // Slash adayları: ^/([^\s]*)$ (trailing space yoksa popup açık)
+    val slashItems = remember(inputVal.text, commands) {
+        val mm = Regex("""^/([^\s]*)$""").matchEntire(inputVal.text) ?: return@remember null
         val prefix = mm.groupValues[1].lowercase()
-        commands.filter { it.name.lowercase().startsWith(prefix) }.take(20)
+        commands.filter { it.name.lowercase().startsWith(prefix) }
     }
     val slashOpen = slashItems != null && slashItems.isNotEmpty()
 
-    BackHandler(enabled = slashOpen) { input = "" }
+    BackHandler(enabled = slashOpen) { inputVal = TextFieldValue("") }
     BackHandler(enabled = dialog != null) {
         dialog?.let { d -> if (d.id != null) client.dialogResponse(d.id, true) }
         client.hideDialog()
@@ -230,14 +322,15 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
     BackHandler(enabled = modelSheet) { modelSheet = false }
     BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
 
-    val sessionLabel = client.sessionName
-        ?: client.sessionFile?.split('/', '\\')?.lastOrNull()?.removeSuffix(".jsonl") ?: "—"
-    val stripVisible = statuses.isNotEmpty() || widgets.isNotEmpty() || stats != null || client.modelId != null
-    // Strip scroll durumları ekran seviyesinde: koşul açılıp kapanınca pozisyon sıfırlanmasın.
+    // BUG 2 FIX: safe title
+    val sessionLabel = cleanSessionTitle(client.sessionName, null, client.sessionFile, "—")
+
+    // BUG 1 FIX: Durum şeridi kararlı görünürlük ve sabit yükseklik
+    val hasStats = stats != null && (stats?.totalTokens != null || stats?.cost != null || stats?.contextPercent != null)
+    val stripVisible = statuses.isNotEmpty() || widgets.isNotEmpty() || hasStats || client.modelId != null
     val stripVScroll = rememberScrollState()
     val stripHScroll = rememberScrollState()
-    // Klavye açıkken navigationBars inset'i yerine ime inset'i kullan (bar klavyenin üstünde kalsın)
-    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+    val statsHScroll = rememberScrollState()
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -245,6 +338,7 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
             ModalDrawerSheet(
                 modifier = Modifier.widthIn(max = 320.dp).fillMaxHeight(),
                 drawerContainerColor = Damen.DrawerBg,
+                windowInsets = WindowInsets.statusBars.union(WindowInsets.navigationBars),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -263,13 +357,15 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
                     if (sessions.isEmpty()) item {
                         Text(Lang.t("noSessions"), fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Faint, modifier = Modifier.padding(12.dp))
                     }
-                    items(sessions.size, key = { sessions[it].path }) { k ->
-                        val s = sessions[k]
+                    itemsIndexed(sessions, key = { _, s -> s.path }) { _, s ->
                         val active = s.path == client.sessionFile
-                        val title = s.name ?: s.title ?: s.path.split('/', '\\').lastOrNull()?.removeSuffix(".jsonl") ?: "?"
+                        val title = cleanSessionTitle(s.name, s.title, s.path, "oturum")
                         val meta = buildString {
                             append(fmtTime(s.modified))
-                            if (s.messageCount > 0) { if (isNotEmpty()) append("  ·  "); append("${s.messageCount} ${Lang.t("messages")}") }
+                            if (s.messageCount > 0) {
+                                if (isNotEmpty()) append("  ·  ")
+                                append("${s.messageCount} ${Lang.t("messages")}")
+                            }
                         }
                         Column(
                             modifier = Modifier.fillMaxWidth()
@@ -300,7 +396,7 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
                 Row(
                     modifier = Modifier.fillMaxWidth()
                         .background(Damen.Bg)
-                        .windowInsetsPadding(WindowInsets.statusBars)
+                        .statusBarsPadding()
                         .padding(horizontal = 12.dp)
                         .height(44.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -321,52 +417,72 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
                 Divider(color = Damen.LineDim, thickness = 1.dp)
             },
             bottomBar = {
+                // BUG 3 FIX: Navigation bars ve IME birleşimi — klavye açılınca bar klavyenin tam üstüne kalkar
                 Column(
                     modifier = Modifier.background(Damen.Bg)
-                        .then(if (imeBottom > 0) Modifier.imePadding() else Modifier.windowInsetsPadding(WindowInsets.navigationBars)),
+                        .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
                 ) {
+                    // Kuyruk durumu
                     if (qSteer > 0 || qFollow > 0) {
                         val parts = mutableListOf<String>()
                         if (qSteer > 0) parts += "▲ $qSteer ${Lang.t("steer")}"
                         if (qFollow > 0) parts += "▽ $qFollow ${Lang.t("followUp")}"
-                        Text(parts.joinToString("   ·   "), fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Faint, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
+                        Text(
+                            parts.joinToString("   ·   "),
+                            fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Faint,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                        )
                         Divider(color = Damen.LineDim, thickness = 1.dp)
                     }
+
+                    // BUG 1 FIX: Durum ve istatistik şeridi — SABİT BOY + DİKEY & YATAY KAYDIRILABİLİR
                     if (stripVisible) {
                         Column(
-                            modifier = Modifier.heightIn(max = 88.dp)
+                            modifier = Modifier.fillMaxWidth()
+                                .heightIn(max = 68.dp)
                                 .verticalScroll(stripVScroll)
-                                .padding(horizontal = 12.dp, vertical = 5.dp),
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
                         ) {
                             if (statuses.isNotEmpty() || widgets.isNotEmpty()) {
-                                Row(modifier = Modifier.horizontalScroll(stripHScroll), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Row(
+                                    modifier = Modifier.horizontalScroll(stripHScroll),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                ) {
                                     statuses.forEach { Text(it, fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Dim) }
                                     widgets.forEach { Text(it, fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Dim) }
                                 }
                             }
-                            StatsLine(client, stats)
+                            StatsLine(client, stats, statsHScroll)
                         }
                         Divider(color = Damen.LineDim, thickness = 1.dp)
                     }
-                    // Kompozitör
-                    Box {
-                        if (slashOpen) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth()
-                                    .padding(horizontal = 10.dp)
-                                    .background(Damen.Surface)
-                                    .border(1.dp, Damen.Line),
-                            ) {
-                                slashItems!!.forEachIndexed { idx, c ->
+
+                    // YENİDEN TASARLANAN SLASH KOMUT POPUP'I
+                    // Mesaj alanının üstünde yüzen (floating), kaydırılabilir, şık popup
+                    if (slashOpen) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                                .heightIn(max = 220.dp)
+                                .border(1.dp, Damen.Line),
+                            color = Damen.Surface,
+                            tonalElevation = 6.dp,
+                        ) {
+                            LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                                itemsIndexed(slashItems!!, key = { _, c -> c.name }) { idx, c ->
+                                    val isCur = idx == slashActive
                                     Row(
                                         modifier = Modifier.fillMaxWidth()
-                                            .clickable { input = "/${c.name} " }
-                                            .padding(start = if (idx == slashActive) 10.dp else 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp)
-                                            .then(if (idx == slashActive) Modifier.startBorder(2.dp, color = Damen.Accent) else Modifier),
+                                            .clickable {
+                                                val nextText = "/${c.name} "
+                                                inputVal = TextFieldValue(nextText, TextRange(nextText.length))
+                                            }
+                                            .padding(start = if (isCur) 10.dp else 12.dp, end = 12.dp, top = 9.dp, bottom = 9.dp)
+                                            .then(if (isCur) Modifier.startBorder(2.dp, color = Damen.Accent) else Modifier),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        Text("/" + c.name, fontFamily = Damen.Mono, fontSize = 13.sp, color = Damen.Fg)
+                                        Text("/" + c.name, fontFamily = Damen.Mono, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Damen.Fg)
                                         Text(
                                             if (Lang.code == "tr") c.description else c.descriptionEn.ifBlank { c.description },
                                             fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Faint,
@@ -379,8 +495,13 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
                             }
                         }
                     }
+
+                    // Eklenen dosyaların listesi (tray)
                     if (pendingFiles.length() > 0) {
-                        Row(modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
                             val names = client.pendingNames(pendingFiles)
                             ChipRow(names) { idx ->
                                 val next = JSONArray()
@@ -389,48 +510,69 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
                             }
                         }
                     }
+
+                    // Mesaj Kompozitörü: [+] [Metin] [↑/Gönder]
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(8.dp, 10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(8.dp, 8.dp),
                         verticalAlignment = Alignment.Bottom,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Box(modifier = Modifier.height(BtnH).width(36.dp).clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { picker.launch(arrayOf("*/*")) }, contentAlignment = Alignment.Center) {
-                            Text("＋", fontFamily = Damen.Mono, fontSize = 14.sp, color = Damen.Dim)
+                        Box(
+                            modifier = Modifier.height(BtnH).width(36.dp).clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { picker.launch(arrayOf("*/*")) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("＋", fontFamily = Damen.Mono, fontSize = 15.sp, color = Damen.Dim)
                         }
+
                         TextField(
-                            value = input,
+                            value = inputVal,
                             onValueChange = {
-                                input = it
+                                inputVal = it
                                 slashActive = 0
-                                try { prefs.edit().putString(sessionKey, it).apply() } catch (_: Exception) { }
+                                try { prefs.edit().putString(sessionKey, it.text).apply() } catch (_: Exception) { }
                             },
                             modifier = Modifier.weight(1f)
-                                .onFocusChanged { st ->
-                                    if (st.isFocused) {
-                                        // Bara dokun = en aşağı git (nerede olursan ol)
-                                        stick = true
-                                        scope.launch {
-                                            val total = listState.layoutInfo.totalItemsCount
-                                            if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
-                                        }
-                                    }
-                                }
+                                .focusRequester(inputFocusRequester)
                                 .onPreviewKeyEvent { e ->
                                     if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                                     when {
-                                        e.key == Key.Enter && !e.isShiftPressed -> { submit(input); true }
-                                        e.key == Key.DirectionUp && slashOpen -> { slashActive = (slashActive - 1 + slashItems!!.size) % slashItems.size; true }
-                                        e.key == Key.DirectionDown && slashOpen -> { slashActive = (slashActive + 1) % slashItems!!.size; true }
-                                        e.key == Key.Tab && slashOpen -> { input = "/${slashItems!![slashActive].name} "; true }
-                                        e.key == Key.DirectionUp && history.isNotEmpty() && !input.contains("\n") -> {
-                                            if (histIdx == -1) { histDraft = input; histIdx = 0 } else histIdx = minOf(histIdx + 1, history.lastIndex)
-                                            input = history[histIdx]; true
+                                        e.key == Key.Enter && !e.isShiftPressed -> {
+                                            submit(inputVal.text)
+                                            true
                                         }
-                                        e.key == Key.DirectionDown && histIdx >= 0 && !input.contains("\n") -> {
-                                            if (histIdx == 0) { histIdx = -1; input = histDraft } else { histIdx--; input = history[histIdx] }
+                                        e.key == Key.DirectionUp && slashOpen -> {
+                                            slashActive = (slashActive - 1 + slashItems!!.size) % slashItems.size
+                                            true
+                                        }
+                                        e.key == Key.DirectionDown && slashOpen -> {
+                                            slashActive = (slashActive + 1) % slashItems!!.size
+                                            true
+                                        }
+                                        e.key == Key.Tab && slashOpen -> {
+                                            val cmd = slashItems!![slashActive]
+                                            val nextText = "/${cmd.name} "
+                                            inputVal = TextFieldValue(nextText, TextRange(nextText.length))
+                                            true
+                                        }
+                                        e.key == Key.DirectionUp && history.isNotEmpty() && !inputVal.text.contains("\n") -> {
+                                            if (histIdx == -1) { histDraft = inputVal.text; histIdx = 0 }
+                                            else histIdx = minOf(histIdx + 1, history.lastIndex)
+                                            val nextText = history[histIdx]
+                                            inputVal = TextFieldValue(nextText, TextRange(nextText.length))
+                                            true
+                                        }
+                                        e.key == Key.DirectionDown && histIdx >= 0 && !inputVal.text.contains("\n") -> {
+                                            if (histIdx == 0) {
+                                                histIdx = -1
+                                                inputVal = TextFieldValue(histDraft, TextRange(histDraft.length))
+                                            } else {
+                                                histIdx--
+                                                val nextText = history[histIdx]
+                                                inputVal = TextFieldValue(nextText, TextRange(nextText.length))
+                                            }
                                             true
                                         }
                                         else -> false
@@ -439,6 +581,7 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
                             placeholder = { Text("…", fontFamily = Damen.Mono, fontSize = 14.sp, color = Damen.Faint) },
                             textStyle = TextStyle(fontFamily = Damen.Mono, fontSize = 14.sp, lineHeight = 20.sp, color = Damen.Fg),
                             maxLines = 5,
+                            interactionSource = inputInteraction,
                             colors = TextFieldDefaults.colors(
                                 focusedContainerColor = Color.Transparent,
                                 unfocusedContainerColor = Color.Transparent,
@@ -446,16 +589,21 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
                                 unfocusedIndicatorColor = Color.Transparent,
                             ),
                         )
-                        if (streaming && input.trim().isNotEmpty()) {
-                            Box(modifier = Modifier.height(BtnH).width(44.dp).border(1.dp, Damen.Line).clickable { submit(input) }, contentAlignment = Alignment.Center) {
+
+                        if (streaming && inputVal.text.trim().isNotEmpty()) {
+                            Box(
+                                modifier = Modifier.height(BtnH).width(44.dp).border(1.dp, Damen.Line).clickable { submit(inputVal.text) },
+                                contentAlignment = Alignment.Center,
+                            ) {
                                 Text("↑", fontFamily = Damen.Mono, fontSize = 18.sp, color = Damen.Dim)
                             }
                         }
-                        val canSend = streaming || input.trim().isNotEmpty() || pendingFiles.length() > 0
+
+                        val canSend = streaming || inputVal.text.trim().isNotEmpty() || pendingFiles.length() > 0
                         Box(
                             modifier = Modifier.height(BtnH).width(44.dp)
                                 .border(1.dp, if (canSend) Damen.Accent else Damen.Line)
-                                .clickable(enabled = canSend) { if (streaming) client.abort() else submit(input) },
+                                .clickable(enabled = canSend) { if (streaming) client.abort() else submit(inputVal.text) },
                             contentAlignment = Alignment.Center,
                         ) {
                             if (streaming) {
@@ -472,7 +620,11 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
         ) { pad ->
             Box(modifier = Modifier.fillMaxSize().padding(pad)) {
                 if (messages.isEmpty() && live.isEmpty()) {
-                    Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
                         DotGlyph()
                         Spacer(Modifier.height(16.dp))
                         Text(Lang.t("emptyHint"), fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 2.5.sp, color = Damen.Faint)
@@ -481,12 +633,14 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
                     var num = 0
                     var noticeIdx = 0
                     val sortedNotices = notices
+
+                    // BUG 4 FIX: LazyColumn optimize edildi; immutable item'lar sayesinde canlı akışta geçmiş turn'ler yeniden hesaplanmaz
                     LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
                         messages.forEachIndexed { mi, m ->
                             if (m.role == "user" || m.role == "assistant") {
                                 num++
                                 val n = num
-                                item(key = "m$mi") { Turn(n, m, client) }
+                                item(key = "m$mi") { Turn(n, m) }
                             } else if (m.role == "bashExecution") {
                                 item(key = "m$mi") { BashTurn(num + 1, m) }
                             }
@@ -517,19 +671,24 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
                         }
                     }
                 }
-                if (!stick && (messages.isNotEmpty() || live.isNotEmpty())) {
+
+                // BUG 5 FIX: Aşağı kaydırma FAB'ı tam olarak dipte olunmadığında görünür ve tıklandığında alta kaydırır
+                AnimatedVisibility(
+                    visible = !isAtBottom && (messages.isNotEmpty() || live.isNotEmpty()),
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp),
+                ) {
                     OutlinedButton(
-                        onClick = {
-                            stick = true
-                            scope.launch {
-                                val total = listState.layoutInfo.totalItemsCount
-                                if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
-                            }
-                        },
-                        modifier = Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = 14.dp),
+                        onClick = { scrollToBottom(animate = true) },
                         border = androidx.compose.foundation.BorderStroke(1.dp, Damen.Line),
-                    ) { Text("↓", fontFamily = Damen.Mono, fontSize = 16.sp, color = Damen.Fg) }
+                        colors = ButtonDefaults.outlinedButtonColors(containerColor = Damen.Surface2),
+                        contentPadding = PaddingValues(12.dp),
+                    ) {
+                        Text("↓", fontFamily = Damen.Mono, fontSize = 16.sp, color = Damen.Fg)
+                    }
                 }
+
                 toastMsg?.let { tm ->
                     Box(
                         modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp)
@@ -551,25 +710,40 @@ fun ChatScreen(client: GwClient, token: String, initialText: String = "", onCons
         )
     }
 
-    dialog?.let { d -> DialogSheet(d, commands, client) }
+    dialog?.let { d ->
+        DialogSheet(
+            d = d,
+            commands = commands,
+            client = client,
+            onSelectCommand = { cmdName ->
+                val nextText = "/$cmdName "
+                inputVal = TextFieldValue(nextText, TextRange(nextText.length))
+            },
+        )
+    }
 }
 
 @Composable
 private fun IconBtn(text: String, desc: String, onClick: () -> Unit) {
-    Box(modifier = Modifier.size(48.dp).clickable(
-        interactionSource = remember { MutableInteractionSource() },
-        indication = null,
-    ) { onClick() }, contentAlignment = Alignment.Center) {
+    Box(
+        modifier = Modifier.size(48.dp).clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+        ) { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
         Text(text, fontFamily = Damen.Mono, fontSize = 14.sp, color = Damen.Dim)
     }
 }
 
 @Composable
 private fun GhostBtn(text: String, onClick: () -> Unit) {
-    Box(modifier = Modifier.border(1.dp, Damen.Line).clickable(
-        interactionSource = remember { MutableInteractionSource() },
-        indication = null,
-    ) { onClick() }.padding(horizontal = 8.dp, vertical = 5.dp)) {
+    Box(
+        modifier = Modifier.border(1.dp, Damen.Line).clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+        ) { onClick() }.padding(horizontal = 8.dp, vertical = 5.dp),
+    ) {
         Micro(text, Damen.Dim)
     }
 }
@@ -584,7 +758,7 @@ private fun RecDot() {
 }
 
 @Composable
-private fun Turn(num: Int, m: ChatMsg, client: GwClient) {
+private fun Turn(num: Int, m: ChatMsg) {
     Column(modifier = Modifier.padding(12.dp, 14.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(num.toString().padStart(2, '0'), fontFamily = Damen.Mono, fontSize = 10.sp, color = Damen.Faint)
@@ -597,8 +771,11 @@ private fun Turn(num: Int, m: ChatMsg, client: GwClient) {
         m.parts.forEach { p ->
             when (p) {
                 is Part.Text -> if (p.text.isNotBlank()) MdBody(p.text)
-                is Part.Thinking -> { var ex by remember { mutableStateOf(false) }; ThinkingBlock(p.thinking, ex) { ex = !ex } }
-                is Part.ToolCall -> ToolCard(p.name, p.args, p.argsRaw, client.outputFor(p.id), "end", false, 0)
+                is Part.Thinking -> {
+                    var ex by remember { mutableStateOf(false) }
+                    ThinkingBlock(p.thinking, ex) { ex = !ex }
+                }
+                is Part.ToolCall -> ToolCard(p.name, p.args, p.argsRaw, p.output, "end", false, 0)
                 is Part.Image -> {
                     val ext = p.mime?.split("/")?.getOrNull(1) ?: ""
                     ChipRow(listOf(if (ext.isNotEmpty()) "image.$ext" else "image"))
@@ -655,7 +832,7 @@ private fun NoticeRow(n: Notice) {
 private fun toolSubtitle(args: Any?): String {
     if (args == null) return ""
     if (args is String) return args.lineSequence().firstOrNull()?.take(120) ?: ""
-    if (args is JSONObject) {
+    if (args is org.json.JSONObject) {
         for (k in listOf("path", "command", "pattern", "query", "url")) {
             val v = args.optString(k, "")
             if (v.isNotEmpty()) return v.lineSequence().firstOrNull() ?: ""
@@ -674,7 +851,6 @@ private fun ToolCard(
     phase: String, isError: Boolean, t0: Long,
 ) {
     var open by remember { mutableStateOf(false) }
-    // Süre hapı: kartın kendi 1sn sayacı (bitince/ekrandan çıkınca durur)
     var sec by remember { mutableStateOf(0L) }
     LaunchedEffect(phase, t0) {
         if (phase == "running") {
@@ -698,8 +874,6 @@ private fun ToolCard(
         ) {
             when {
                 phase == "running" -> {
-                    val inf = rememberInfiniteTransition(label = "tool")
-                    val r by inf.animateFloat(0f, 360f, infiniteRepeatable(tween(700), RepeatMode.Restart), label = "tool")
                     Text("◌", fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Dim)
                 }
                 isError -> Text("✗", fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Accent)
@@ -786,12 +960,15 @@ private fun ToolCard(
 private fun String.ifNotBlank(f: () -> String): String = if (isNotBlank()) this else f()
 
 @Composable
-private fun StatsLine(client: GwClient, stats: Stats?) {
+private fun StatsLine(client: GwClient, stats: Stats?, scrollState: androidx.compose.foundation.ScrollState) {
     val modelTxt = (client.modelName ?: client.modelId ?: "").uppercase()
     val pct = stats?.contextPercent
     val win = stats?.contextWindow ?: client.modelContextWindow
     val cls = if (pct != null && pct >= 80) Damen.Accent else if (pct != null && pct >= 50) Damen.Dim else Damen.Faint
-    Row(modifier = Modifier.padding(top = 2.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+    Row(
+        modifier = Modifier.padding(top = 2.dp).horizontalScroll(scrollState),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
         if (modelTxt.isNotEmpty()) Text(modelTxt, fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 1.1.sp, color = Damen.Faint)
         Text(client.thinkingLevel.uppercase(), fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 1.1.sp, color = Damen.Faint)
         if (pct != null) Text("CTX %.1f%%%s".format(pct, if (win != null) "/${fmtTokens(win)}" else ""), fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 1.1.sp, color = cls)
@@ -838,7 +1015,7 @@ private fun ModelSheet(client: GwClient, query: String, onQuery: (String) -> Uni
             )
             Row(modifier = Modifier.padding(10.dp, 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Micro(Lang.t("thinking"), Damen.Dim)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     levels.forEach { lv ->
                         val active = lv == client.thinkingLevel
                         Box(modifier = Modifier.border(1.dp, if (active) Damen.Accent else Damen.Line).clickable(
@@ -855,8 +1032,7 @@ private fun ModelSheet(client: GwClient, query: String, onQuery: (String) -> Uni
                 if (list.isEmpty()) item {
                     Text(Lang.t("noModels"), fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Faint, modifier = Modifier.padding(14.dp))
                 }
-                items(list.size, key = { list[it].provider + "/" + list[it].id }) { k ->
-                    val m = list[k]
+                itemsIndexed(list, key = { _, m -> m.provider + "/" + m.id }) { _, m ->
                     val active = client.modelProvider == m.provider && client.modelId == m.id
                     Row(
                         modifier = Modifier.fillMaxWidth()
@@ -878,8 +1054,15 @@ private fun ModelSheet(client: GwClient, query: String, onQuery: (String) -> Uni
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DialogSheet(d: DialogState, commands: List<Cmd>, client: GwClient) {
+private fun DialogSheet(
+    d: DialogState,
+    commands: List<Cmd>,
+    client: GwClient,
+    onSelectCommand: (String) -> Unit = {},
+) {
     var field by remember(d.id, d.kind) { mutableStateOf(d.prefill) }
+    var searchHelp by remember { mutableStateOf("") }
+
     ModalBottomSheet(
         onDismissRequest = { if (d.id != null) client.dialogResponse(d.id, true); client.hideDialog() },
         containerColor = Damen.Surface,
@@ -887,19 +1070,55 @@ private fun DialogSheet(d: DialogState, commands: List<Cmd>, client: GwClient) {
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             if (d.kind == "help") {
-                Micro(Lang.t("helpTitle"), Damen.Dim)
-                Spacer(Modifier.height(12.dp))
-                commands.forEach { c ->
-                    Row(modifier = Modifier.padding(vertical = 7.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("/" + c.name, fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Fg)
-                        Text(
-                            if (Lang.code == "tr") c.description else c.descriptionEn.ifBlank { c.description },
-                            fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Faint, modifier = Modifier.weight(1f),
-                        )
-                    }
-                    Divider(color = Damen.LineDim, thickness = 1.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Micro(Lang.t("helpTitle"), Damen.Dim)
+                    Micro("${commands.size} KOMUT", Damen.Faint)
                 }
+                Spacer(Modifier.height(10.dp))
+                TextField(
+                    value = searchHelp,
+                    onValueChange = { searchHelp = it },
+                    placeholder = { Text("komut filtrele…", fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Faint) },
+                    textStyle = TextStyle(fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Fg),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().border(1.dp, Damen.Line),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Damen.Bg, unfocusedContainerColor = Damen.Bg,
+                        focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
+                    ),
+                )
                 Spacer(Modifier.height(8.dp))
+                val filtered = if (searchHelp.isBlank()) commands else commands.filter {
+                    it.name.contains(searchHelp, ignoreCase = true) ||
+                        it.description.contains(searchHelp, ignoreCase = true)
+                }
+                LazyColumn(modifier = Modifier.heightIn(max = 340.dp)) {
+                    itemsIndexed(filtered, key = { _, c -> c.name }) { _, c ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable {
+                                    onSelectCommand(c.name)
+                                    client.hideDialog()
+                                }
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("/" + c.name, fontFamily = Damen.Mono, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Damen.Fg)
+                            Text(
+                                if (Lang.code == "tr") c.description else c.descriptionEn.ifBlank { c.description },
+                                fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Faint, modifier = Modifier.weight(1f),
+                            )
+                            Micro(srcTag(c.source), Damen.Faint)
+                        }
+                        Divider(color = Damen.LineDim, thickness = 1.dp)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
                 DialogBtn(Lang.t("ok"), primary = true) { client.hideDialog() }
             } else {
                 Micro(
@@ -949,14 +1168,16 @@ private fun DialogSheet(d: DialogState, commands: List<Cmd>, client: GwClient) {
 
 @Composable
 private fun DialogBtn(text: String, primary: Boolean, onClick: () -> Unit) {
-    Box(modifier = Modifier.fillMaxWidth()
-        .padding(vertical = 4.dp)
-        .border(1.dp, if (primary) Damen.Accent else Damen.Line)
-        .clickable(
-            interactionSource = remember { MutableInteractionSource() },
-            indication = null,
-        ) { onClick() }
-        .padding(12.dp)) {
+    Box(
+        modifier = Modifier.fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .border(1.dp, if (primary) Damen.Accent else Damen.Line)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { onClick() }
+            .padding(12.dp),
+    ) {
         Text(text, fontFamily = Damen.Mono, fontSize = 13.sp, color = Damen.Fg)
     }
 }

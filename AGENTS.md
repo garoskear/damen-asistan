@@ -49,7 +49,15 @@ MainActivity (Compose, Nothing tema)
 - Compose `@Composable` import'ları + `collectAsState` için `lifecycle-runtime-compose` gerekir.
 - AGP 8.2 signing: `getByName("debug")` düzenlenir, `create` çakışır.
 
-## v2 (2026-09-13, pi web paritesi)
+## v2.1 Rebuild (2026-09-13, stabilizasyon ve parite)
+- **Info Strip (Bug 1):** `statuses`, `widgets`, `stats` şeridi sabit üst sınırlı boyutta (`heightIn(max = 68.dp)`), dikey ve yatay kaydırma durumları ekran seviyesinde sabitlendi; titreme ve sağa kayma önlendi.
+- **Session Adları "null" (Bug 2):** Android `JSONObject.optString`'in literal `"null"` dönmesi `safeNull` ve `cleanSessionTitle` ile tamamen engellendi; oturum adı yoksa dosya adı veya güvenli fallback gelir.
+- **Klavye / IME Mesaj Barı (Bug 3):** `WindowInsets.navigationBars.union(WindowInsets.ime)` ile klavye açıkken tam klavye üstüne kalkar, kapalıyken sistem navigasyon barı üstünde durur (çakışma ve boşluk sıfırlandı).
+- **Lag ve Akıcılık (Bug 4):** Bütün model ve mesaj sınıfları `@Immutable` yapıldı (Compose turn skipping aktif — canlı akış sırasında geçmiş turn'ler yeniden hesaplanmaz); `Turn` içinden kararsız `client` referansı kaldırıldı (çıktı doğrudan `Part.ToolCall` içinde taşınır); `Md.kt` regex'leri statik derlendi, hızlı tek-geçiş inline parser yazıldı.
+- **Jump FAB & Bar Dokunma (Bug 5):** `isAtBottom` tespiti `derivedStateOf` ile sıfır maliyetle yapılır; mesaj çubuğuna dokunulduğu/odaklanıldığı anda liste en alta zıplar; FAB sadece dipte değilken belirir.
+- **Tasarım Birliği & Edge-to-Edge (Bug 6):** `Theme.Damen` oluşturuldu (`themes.xml` ve `AndroidManifest.xml`), status bar ve navigation bar şeffaf, saf siyah arka plan ile üst siyah boşluk kaldırıldı; drawer ve chat aynı Nothing monokrom dilini konuşur.
+- **Slash Komutları UI & UX:** Mesaj barı üzerinde yüzen (floating), kaydırılabilir `LazyColumn` popup (220dp max), SYS/EXT/SKILL/PROMPT rozetleri, `BUILTIN_COMMANDS` ile çevrimdışı fallback, arama filtreli `/help` sheet'i ve argümanlı/argümansız komut akışı tamamlandı.
+
 - Tema tokenları `Theme.kt` (style.css :root birebiri) + TR/EN `Lang` (i18n.js birebiri).
 - `Md.kt`: mini markdown (başlık/kod/liste/alıntı/tablo/chip) + satır içi kod/kalın/link.
 - `GwClient`: yapısal part'lar (text/thinking/toolCall/image, bashExecution), live segment sırası,

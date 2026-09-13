@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
+import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,38 +23,122 @@ import java.util.concurrent.TimeUnit
 
 /** damen-gateway WS protokolünün Kotlin karşılığı (web/app.js ile birebir). */
 
+@Immutable
 sealed interface Part {
     data class Text(val text: String) : Part
     data class Thinking(val thinking: String) : Part
-    data class ToolCall(val id: String?, val name: String, val args: String, val argsRaw: Any?) : Part
+    data class ToolCall(
+        val id: String?,
+        val name: String,
+        val args: String,
+        val argsRaw: Any?,
+        val output: String = "",
+    ) : Part
     data class Image(val mime: String?) : Part
 }
-data class ChatMsg(val role: String, val parts: List<Part>, val command: String = "", val output: String = "")
-data class SessionInfo(
-    val path: String, val name: String?, val title: String?,
-    val modified: Long, val messageCount: Int, val running: Boolean = false,
+
+@Immutable
+data class ChatMsg(
+    val role: String,
+    val parts: List<Part>,
+    val command: String = "",
+    val output: String = "",
 )
+
+@Immutable
+data class SessionInfo(
+    val path: String,
+    val name: String?,
+    val title: String?,
+    val modified: Long,
+    val messageCount: Int,
+    val running: Boolean = false,
+)
+
+@Immutable
 data class ModelInfo(val provider: String, val id: String, val name: String)
-data class Cmd(val name: String, val description: String, val descriptionEn: String, val source: String)
-data class Stats(val totalTokens: Long?, val cost: Double?, val contextPercent: Double?, val contextWindow: Long?)
+
+@Immutable
+data class Cmd(
+    val name: String,
+    val description: String,
+    val descriptionEn: String,
+    val source: String,
+)
+
+@Immutable
+data class Stats(
+    val totalTokens: Long?,
+    val cost: Double?,
+    val contextPercent: Double?,
+    val contextWindow: Long?,
+)
+
+@Immutable
 data class Notice(val text: String, val level: String, val at: Int)
+
+@Immutable
 data class ToastMsg(val text: String, val level: String, val id: Long)
+
+@Immutable
 data class DialogState(
-    val id: Int?, val kind: String, val title: String, val message: String,
-    val options: List<String>, val placeholder: String, val prefill: String,
+    val id: Int?,
+    val kind: String,
+    val title: String,
+    val message: String,
+    val options: List<String>,
+    val placeholder: String,
+    val prefill: String,
     val commands: List<Cmd> = emptyList(),
 )
 
+@Immutable
 sealed interface LiveSeg {
     data class Text(val text: String, var expanded: Boolean = false) : LiveSeg
     data class Thinking(val text: String, var expanded: Boolean = false) : LiveSeg
     data class Tool(
-        val id: String?, var name: String, var args: String, var argsRaw: Any?,
-        var output: String, var phase: String, var isError: Boolean, val t0: Long = System.currentTimeMillis(),
+        val id: String?,
+        var name: String,
+        var args: String,
+        var argsRaw: Any?,
+        var output: String,
+        var phase: String,
+        var isError: Boolean,
+        val t0: Long = System.currentTimeMillis(),
     ) : LiveSeg
 }
 
-sealed interface Conn { data object Idle : Conn; data object Connecting : Conn; data object Open : Conn; data class Error(val text: String) : Conn }
+@Immutable
+sealed interface Conn {
+    data object Idle : Conn
+    data object Connecting : Conn
+    data object Open : Conn
+    data class Error(val text: String) : Conn
+}
+
+val BUILTIN_COMMANDS = listOf(
+    Cmd("new", "Yeni oturum başlat", "Start a new session", "builtin"),
+    Cmd("resume", "Kayıtlı oturumları aç", "Open saved sessions", "builtin"),
+    Cmd("model", "Model seç veya değiştir: /model [provider/id]", "Pick or switch model: /model [provider/id]", "builtin"),
+    Cmd("thinking", "Düşünme seviyesi: off|minimal|low|medium|high|xhigh|max", "Thinking level: off|minimal|low|medium|high|xhigh|max", "builtin"),
+    Cmd("compact", "Bağlamı sıkıştır: /compact [odak]", "Compact context: /compact [instructions]", "builtin"),
+    Cmd("name", "Oturumu adlandır: /name <ad>", "Name the session: /name <name>", "builtin"),
+    Cmd("clear-queue", "Bekleyen kuyruğu temizle", "Clear pending steer/follow-up queue", "builtin"),
+    Cmd("copy", "Son pi yanıtını panoya kopyala", "Copy last pi reply to clipboard", "builtin"),
+    Cmd("help", "Tüm slash komutlarını listele", "List all slash commands", "builtin"),
+)
+
+/** Güvenli oturum adı fallback'i: literal 'null' stringini kesinlikle engeller. */
+fun cleanSessionTitle(name: String?, title: String?, path: String?, fallback: String = "oturum"): String {
+    val n = name?.trim()?.takeIf { it.isNotEmpty() && it != "null" }
+    if (n != null) return n
+    val t = title?.trim()?.takeIf { it.isNotEmpty() && it != "null" }
+    if (t != null) return t
+    val f = path?.split('/', '\\')?.lastOrNull()?.removeSuffix(".jsonl")?.trim()
+        ?.takeIf { it.isNotEmpty() && it != "null" }
+    if (f != null) return f
+    return fallback
+}
 
 /** Sunucuyla birebir temizlik (web sanitizeName): iyimser @satırlar settled ile eşleşir. */
 fun sanitizeName(name: String): String {
@@ -82,7 +167,7 @@ fun normalizeEdits(raw: Any?): Pair<String?, List<Pair<String, String>>>? {
         is String -> try { JSONObject(raw) } catch (_: Exception) { return null }
         else -> return null
     }
-    val path = o.optString("path", null)
+    val path = o.safeNull("path")
     val arr = o.optJSONArray("edits")
     if (arr != null) {
         val list = mutableListOf<Pair<String, String>>()
@@ -119,6 +204,8 @@ fun lineDiff(a: String, b: String): List<Pair<Char, String>>? {
 class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)) {
     private val http = OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
     private var ws: WebSocket? = null
+    private var reconnectDelay = 800L
+    private var reconnecting = false
 
     private val _conn = MutableStateFlow<Conn>(Conn.Idle); val conn: StateFlow<Conn> = _conn
     private val _messages = MutableStateFlow<List<ChatMsg>>(emptyList()); val messages: StateFlow<List<ChatMsg>> = _messages
@@ -126,7 +213,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
     private val _streaming = MutableStateFlow(false); val streaming: StateFlow<Boolean> = _streaming
     private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList()); val sessions: StateFlow<List<SessionInfo>> = _sessions
     private val _models = MutableStateFlow<List<ModelInfo>>(emptyList()); val models: StateFlow<List<ModelInfo>> = _models
-    private val _commands = MutableStateFlow<List<Cmd>>(emptyList()); val commands: StateFlow<List<Cmd>> = _commands
+    private val _commands = MutableStateFlow<List<Cmd>>(BUILTIN_COMMANDS); val commands: StateFlow<List<Cmd>> = _commands
     private val _notices = MutableStateFlow<List<Notice>>(emptyList()); val notices: StateFlow<List<Notice>> = _notices
     private val _toast = MutableStateFlow<ToastMsg?>(null); val toast: StateFlow<ToastMsg?> = _toast
     private val _booting = MutableStateFlow(false); val booting: StateFlow<Boolean> = _booting
@@ -164,7 +251,6 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
     private val _stateTick = MutableStateFlow(0); val stateTick: StateFlow<Int> = _stateTick
 
     // Canlı akış: deltada StateFlow'a yazılmaz; çalışma listesi 120ms'de bir flush'lanır.
-    // (web'deki rAF batch karşılığı — uzun cevapta kare başına tek çizim.)
     private val liveWorking = mutableListOf<LiveSeg>()
     private var liveDirty = false
 
@@ -177,7 +263,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
         }
     }
 
-    fun showHelp() { _dialog.value = DialogState(null, "help", "", "", emptyList(), "", "") }
+    fun showHelp() { _dialog.value = DialogState(null, "help", "", "", emptyList(), "", "", _commands.value) }
     fun hideDialog() { _dialog.value = null }
 
     fun toast(text: String, level: String = "info") { _toast.value = ToastMsg(text, level, ++toastSeq) }
@@ -186,24 +272,46 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
     fun connect(token: String) {
         this.token = token
         disconnect()
+        reconnecting = true
+        doConnect()
+    }
+
+    private fun doConnect() {
         _conn.value = Conn.Connecting
         val req = Request.Builder().url(AsistanConfig.wsUrl(token)).build()
         ws = http.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                reconnectDelay = 800
                 _conn.value = Conn.Open
                 sendRaw(JSONObject().put("type", "visibility").put("visible", true).toString())
             }
             override fun onMessage(webSocket: WebSocket, text: String) { scope.launch { onJson(text) } }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 _conn.value = Conn.Error(t.message ?: "bağlantı hatası")
+                scheduleReconnect()
             }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 _conn.value = Conn.Error("kapandı: $reason")
+                scheduleReconnect()
             }
         })
     }
 
-    fun disconnect() { try { ws?.close(1000, "bye") } catch (_: Exception) { }; ws = null }
+    private fun scheduleReconnect() {
+        if (!reconnecting) return
+        scope.launch {
+            kotlinx.coroutines.delay(reconnectDelay)
+            reconnectDelay = minOf(reconnectDelay * 2, 8000)
+            doConnect()
+        }
+    }
+
+    fun disconnect() {
+        reconnecting = false
+        try { ws?.close(1000, "bye") } catch (_: Exception) { }
+        ws = null
+    }
+
     fun setVisible(v: Boolean) = sendRaw(JSONObject().put("type", "visibility").put("visible", v).toString())
 
     private fun sendRaw(s: String) { try { ws?.send(s) } catch (_: Exception) { } }
@@ -272,13 +380,14 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
     private fun applyState(s: JSONObject?) {
         if (s == null) return
         _stateTick.value++
-        sessionName = s.optString("sessionName", null)
-        sessionFile = s.optString("sessionFile", null)
+        // safeNull ile "null" stringi önlenir
+        sessionName = s.safeNull("sessionName")
+        sessionFile = s.safeNull("sessionFile")
         val m = s.optJSONObject("model")
         if (m != null) {
-            modelProvider = m.optString("provider", null)
-            modelId = m.optString("id", null)
-            modelName = m.optString("name", null)
+            modelProvider = m.safeNull("provider")
+            modelId = m.safeNull("id")
+            modelName = m.safeNull("name")
             modelContextWindow = if (m.isNull("contextWindow")) null else m.optLong("contextWindow")
         } else { modelProvider = null; modelId = null; modelName = null; modelContextWindow = null }
         thinkingLevel = s.optString("thinkingLevel", "off")
@@ -293,7 +402,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
         when (o.optString("type")) {
             "hello" -> {
                 _booting.value = false
-                attachDir = o.optString("attachDir", null)
+                attachDir = o.safeNull("attachDir")
                 o.optInt("slot", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }?.let { viewSlot = it }
                 _statuses.value = o.optJSONArray("statuses")?.let { a -> List(a.length()) { a.optJSONObject(it)?.optString("text", "") ?: "" } } ?: emptyList()
                 _widgets.value = o.optJSONArray("widgets")?.let { a ->
@@ -305,7 +414,13 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
             }
             "booting" -> _booting.value = true
             "ready", "state" -> if (forView(o)) applyState(o.optJSONObject("state"))
-            "commands" -> _commands.value = parseCommands(o.optJSONArray("commands"))
+            "commands" -> {
+                val parsed = parseCommands(o.optJSONArray("commands"))
+                val existingNames = parsed.map { it.name }.toSet()
+                // Yerleşik komutlarla dinamik komutları birleştir
+                val merged = parsed + BUILTIN_COMMANDS.filter { it.name !in existingNames }
+                _commands.value = merged
+            }
             "settled" -> {
                 val slot = o.optInt("slot", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }
                 if (slot != null && viewSlot != null && slot != viewSlot) {
@@ -337,24 +452,24 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
             }
             "toolcall_start" -> {
                 if (!forView(o)) return
-                val id = if (o.isNull("id")) null else o.optString("id", null)
-                val name = if (o.isNull("toolName")) null else o.optString("toolName", null)
+                val id = o.safeNull("id")
+                val name = o.safeNull("toolName")
                 if (id != null && name != null) liveTool(id, name, null, "start", null, false)
             }
             "toolcall_end" -> {
                 if (!forView(o)) return
-                val id = if (o.isNull("id")) null else o.optString("id", null)
+                val id = o.safeNull("id")
                 val seg = liveWorking.filterIsInstance<LiveSeg.Tool>().find { it.id != null && it.id == id }
                 if (seg != null && seg.phase == "running") { seg.phase = "end"; liveDirty = true }
             }
             "tool" -> {
                 if (!forView(o)) return
                 liveTool(
-                    if (o.isNull("toolCallId")) null else o.optString("toolCallId", null),
+                    o.safeNull("toolCallId"),
                     o.optString("toolName", "?"),
                     if (o.isNull("args")) null else o.opt("args"),
                     o.optString("phase", "start"),
-                    if (o.isNull("output")) null else o.optString("output", null),
+                    o.safeNull("output"),
                     o.optBoolean("isError", false),
                 )
             }
@@ -368,7 +483,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
                     val path = s.optString("path", "")
                     list += SessionInfo(
                         path,
-                        s.optString("name", null), s.optString("title", null),
+                        s.safeNull("name"), s.safeNull("title"),
                         s.optLong("modified", 0), s.optInt("messageCount", 0),
                         path in running,
                     )
@@ -390,6 +505,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
                 o.optString("message", ""),
                 o.optJSONArray("options")?.let { a -> List(a.length()) { a.optString(it) } } ?: emptyList(),
                 o.optString("placeholder", ""), o.optString("prefill", ""),
+                _commands.value,
             )
             "dialog_closed" -> {
                 val id = if (o.isNull("id")) null else o.optInt("id")
@@ -470,7 +586,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
                         .filter { it?.optString("type") == "text" }
                         .joinToString("\n") { it?.optString("text", "") ?: "" }
                 } ?: ""
-                m.optString("toolCallId", null)?.let { toolResults[it] = text.take(4000) }
+                m.safeNull("toolCallId")?.let { toolResults[it] = text.take(4000) }
                 continue
             }
             if (role == "bashExecution") {
@@ -487,28 +603,25 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
                     when (p.optString("type")) {
                         "text" -> p.optString("text", "").takeIf { it.isNotBlank() }?.let { parts += Part.Text(it) }
                         "thinking" -> p.optString("thinking", "").takeIf { it.isNotBlank() }?.let { parts += Part.Thinking(it) }
-                        "toolCall", "tool_use" -> parts += Part.ToolCall(
-                            p.optString("id", null),
-                            p.optString("name", p.optString("toolName", "?")),
-                            summarizeArgs(p.opt("arguments") ?: p.opt("args")),
-                            p.opt("arguments") ?: p.opt("args"),
-                        )
-                        "image" -> parts += Part.Image(p.optString("mimeType", null))
+                        "toolCall", "tool_use" -> {
+                            val id = p.safeNull("id")
+                            val outText = id?.let { toolResults[it] } ?: ""
+                            parts += Part.ToolCall(
+                                id,
+                                p.optString("name", p.optString("toolName", "?")),
+                                summarizeArgs(p.opt("arguments") ?: p.opt("args")),
+                                p.opt("arguments") ?: p.opt("args"),
+                                outText,
+                            )
+                        }
+                        "image" -> parts += Part.Image(p.safeNull("mimeType"))
                     }
                 }
             }
             if (parts.isNotEmpty()) out += ChatMsg(role, parts)
         }
-        // toolCall çıktılarını eşleştir
-        return out.map { msg ->
-            if (msg.role != "assistant") msg
-            else msg.copy(parts = msg.parts.map {
-                if (it is Part.ToolCall && it.id != null) it.copy(args = it.args) else it
-            })
-        }
+        return out
     }
-
-    fun outputFor(id: String?): String = if (id == null) "" else toolResults[id] ?: ""
 
     /** SAF uri → {name, mime, data(base64)} (gateway limiti: 10 dosya, 25MB). */
     suspend fun stageUris(cr: ContentResolver, uris: List<Uri>): JSONArray = withContext(Dispatchers.IO) {
@@ -537,4 +650,15 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
         for (i in 0 until files.length()) out += files.optJSONObject(i)?.optString("name", "dosya") ?: "dosya"
         return out
     }
+}
+
+/**
+ * Android JSONObject.optString("key", null) eğer JSON null ise "null" stringi döndürür.
+ * Bu yardımcı fonksiyon gerçek null döner ve boşluk/literal "null" durumlarını temizler.
+ */
+fun JSONObject.safeNull(key: String): String? {
+    if (isNull(key)) return null
+    val v = optString(key, "")
+    if (v.isEmpty() || v == "null") return null
+    return v
 }
