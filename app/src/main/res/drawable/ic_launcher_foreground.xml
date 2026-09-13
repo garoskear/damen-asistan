@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dot-matrix "D" in Nothing style. One red dot, top right — the signature. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,12h10v10h-10z M36,12h10v10h-10z M48,12h10v10h-10z M24,24h10v10h-10z M72,24h10v10h-10z M24,36h10v10h-10z M72,36h10v10h-10z M24,48h10v10h-10z M72,48h10v10h-10z M24,60h10v10h-10z M72,60h10v10h-10z M24,72h10v10h-10z M72,72h10v10h-10z M24,84h10v10h-10z M36,84h10v10h-10z M48,84h10v10h-10z M60,84h10v10h-10z" />
+    <path
+        android:fillColor="#FF0000"
+        android:pathData="M60,12h10v10h-10z" />
+</vector>
