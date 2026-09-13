@@ -247,9 +247,12 @@ fun ChatScreen(
         if (autoScrollEnabled) scrollToBottom(animate = false)
     }
 
-    // Canlı akış: her flush'ta (120ms) dipte kal — item büyürken zincirli snap
+    // Canlı akış: dipte kal — ama her flush'ta ağır iş yapma (animate/bekleme yok, tek snap).
+    // Canlı metin ayrıca markdown parse edilmez (aşağıda düz Text) — lag'ın ana kaynağıydı.
     LaunchedEffect(live) {
-        if (live.isNotEmpty() && autoScrollEnabled) scrollToBottom(animate = true)
+        if (live.isNotEmpty() && autoScrollEnabled) {
+            scope.launch { snapBottom() }
+        }
     }
 
     // Klavye açılınca içerik alanı küçülür — en alta yasla
@@ -878,7 +881,7 @@ fun ChatScreen(
                                     live.forEachIndexed { li, seg ->
                                         when (seg) {
                                             is LiveSeg.Thinking -> if (seg.text.isNotEmpty()) ThinkingBlock(seg.text, seg.expanded) { client.toggleLiveThinking(li) }
-                                            is LiveSeg.Text -> if (seg.text.isNotEmpty()) MdBody(seg.text)
+                                            is LiveSeg.Text -> if (seg.text.isNotEmpty()) LiveText(seg.text)
                                             is LiveSeg.Tool -> ToolCard(seg.name, seg.args, seg.argsRaw, seg.output, seg.phase, seg.isError, seg.t0)
                                         }
                                         Spacer(Modifier.height(6.dp))
@@ -1023,6 +1026,20 @@ private fun BashTurn(num: Int, m: ChatMsg) {
         )
     }
     Divider(color = Damen.LineDim, thickness = 1.dp)
+}
+
+/** Canlı akış metni: her 120ms flush'ta markdown parse ETME — düz monospace Text.
+ *  (Uzun metinlerde parse her flush'ta tüm metni yeniden işliyordu → lag.)
+ *  Settled olunca kayıt defteri Turn'ü MdBody ile tam markdown çizer. */
+@Composable
+private fun LiveText(text: String) {
+    val shown = remember(text) {
+        text.takeLast(30_000)
+    }
+    Text(
+        shown, fontFamily = Damen.Mono, fontSize = 14.sp, lineHeight = 21.sp,
+        color = Damen.Fg, modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable

@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Bundle
@@ -55,6 +57,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.util.Locale
 
 /**
@@ -273,28 +276,46 @@ private fun AssistantScreen(
     fun attachAutoScreenshot() {
         val f = autoShotFile?.let { File(it) } ?: File(ctx.cacheDir, "auto_shot.png")
         if (!f.exists() || f.length() <= 0L) { showToast("ekran görüntüsü bulunamadı"); return }
-        if (f.length() > 20 * 1024 * 1024) { showToast("ekran görüntüsü çok büyük"); return }
         val shotPath = f.absolutePath
         DamenLog.log("SHOT", "attach start: $shotPath (${f.length()} bytes)")
         scope.launch {
             try {
-                val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    File(shotPath).readBytes()
+                // 4K ekran PNG'si ~8MB; base64'ü 10MB'a çıkıyordu (bellek sıçraması = çökme şüphesi).
+                // PNG -> JPEG(preview) dönüşümüyle boyut 10x düşer; dönüşüm olmazsa ham PNG kalır.
+                val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    var mime = "image/png"
+                    var bytes: ByteArray = File(shotPath).readBytes()
+                    try {
+                        val bmp = BitmapFactory.decodeFile(shotPath)
+                        if (bmp != null) {
+                            val tmp = File(ctx.cacheDir, "attach_preview.jpg")
+                            FileOutputStream(tmp).use { fos ->
+                                bmp.compress(Bitmap.CompressFormat.JPEG, 80, fos)
+                            }
+                            bmp.recycle()
+                            bytes = tmp.readBytes()
+                            tmp.delete()
+                            mime = "image/jpeg"
+                        }
+                    } catch (_: Exception) { /* PNG fallback */ }
+                    mime to bytes
                 }
-                DamenLog.log("SHOT", "read OK: ${bytes.size} bytes")
-                if (bytes.isNotEmpty() && bytes.size <= 20 * 1024 * 1024) {
+                val (mime, bytes) = res
+                DamenLog.log("SHOT", "converted: $mime ${bytes.size} bytes")
+                if (bytes.isNotEmpty() && bytes.size <= 8 * 1024 * 1024) {
                     val b64 = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                         android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                     }
                     DamenLog.log("SHOT", "b64 OK: ${b64.length} chars")
                     val merged = JSONArray()
                     for (i in 0 until pendingFiles.length()) merged.put(pendingFiles.get(i))
-                    merged.put(JSONObject().put("name", "ekran.png").put("mime", "image/png").put("data", b64))
+                    merged.put(JSONObject().put("name", "ekran.jpeg").put("mime", mime).put("data", b64))
                     pendingFiles = merged
                     DamenLog.log("SHOT", "attached OK: ${merged.length()} files")
                     showToast("+ ekran görüntüsü eklendi")
                 } else {
-                    showToast("ekran görüntüsü boş veya çok büyük")
+                    DamenLog.log("SHOT", "too large: ${bytes.size}")
+                    showToast("ekran görüntüsü çok büyük (8MB)")
                 }
             } catch (e: Exception) {
                 DamenLog.log("SHOT", "attach FAIL: ${e}")
