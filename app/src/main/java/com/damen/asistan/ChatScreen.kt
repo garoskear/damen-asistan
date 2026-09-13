@@ -191,7 +191,7 @@ fun ChatScreen(
         liveEmptyRef = live.isEmpty()
     }
 
-    private inline fun snapBottom() {
+    fun snapBottom() {
         val total = listState.layoutInfo.totalItemsCount
         if (total > 0) {
             try {
