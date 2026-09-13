@@ -93,6 +93,18 @@ data class DialogState(
 )
 
 @Immutable
+data class SessionState(
+    val sessionName: String? = null,
+    val sessionFile: String? = null,
+    val modelProvider: String? = null,
+    val modelId: String? = null,
+    val modelName: String? = null,
+    val modelContextWindow: Long? = null,
+    val thinkingLevel: String = "off",
+    val thinkingLevels: List<String>? = null,
+)
+
+@Immutable
 sealed interface LiveSeg {
     data class Text(val text: String, var expanded: Boolean = false) : LiveSeg
     data class Thinking(val text: String, var expanded: Boolean = false) : LiveSeg
@@ -223,32 +235,25 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
     private val _queueFollow = MutableStateFlow(0); val queueFollow: StateFlow<Int> = _queueFollow
     private val _statuses = MutableStateFlow<List<String>>(emptyList()); val statuses: StateFlow<List<String>> = _statuses
     private val _widgets = MutableStateFlow<List<String>>(emptyList()); val widgets: StateFlow<List<String>> = _widgets
+    private val _sessionState = MutableStateFlow(SessionState()); val sessionState: StateFlow<SessionState> = _sessionState
 
     var viewSlot: Int? = null
         private set
     var token: String = ""
-    var sessionName: String? = null
-        private set
-    var sessionFile: String? = null
-        private set
-    var modelProvider: String? = null
-        private set
-    var modelId: String? = null
-        private set
-    var modelName: String? = null
-        private set
-    var modelContextWindow: Long? = null
-        private set
-    var thinkingLevel: String = "off"
-        private set
-    var thinkingLevels: List<String>? = null
-        private set
     var attachDir: String? = null
         private set
 
+    val sessionName: String? get() = _sessionState.value.sessionName
+    val sessionFile: String? get() = _sessionState.value.sessionFile
+    val modelProvider: String? get() = _sessionState.value.modelProvider
+    val modelId: String? get() = _sessionState.value.modelId
+    val modelName: String? get() = _sessionState.value.modelName
+    val modelContextWindow: Long? get() = _sessionState.value.modelContextWindow
+    val thinkingLevel: String get() = _sessionState.value.thinkingLevel
+    val thinkingLevels: List<String>? get() = _sessionState.value.thinkingLevels
+
     private val toolResults = mutableMapOf<String, String>()
     private var toastSeq = 0L
-    private val _stateTick = MutableStateFlow(0); val stateTick: StateFlow<Int> = _stateTick
 
     // Canlı akış: deltada StateFlow'a yazılmaz; çalışma listesi 120ms'de bir flush'lanır.
     private val liveWorking = mutableListOf<LiveSeg>()
@@ -258,7 +263,10 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
         scope.launch {
             while (true) {
                 kotlinx.coroutines.delay(120)
-                if (liveDirty) { liveDirty = false; _live.value = liveWorking.toList() }
+                if (liveDirty) {
+                    liveDirty = false
+                    _live.value = liveWorking.toList()
+                }
             }
         }
     }
@@ -379,21 +387,27 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
 
     private fun applyState(s: JSONObject?) {
         if (s == null) return
-        _stateTick.value++
-        // safeNull ile "null" stringi önlenir
-        sessionName = s.safeNull("sessionName")
-        sessionFile = s.safeNull("sessionFile")
+        val sName = s.safeNull("sessionName")
+        val sFile = s.safeNull("sessionFile")
         val m = s.optJSONObject("model")
-        if (m != null) {
-            modelProvider = m.safeNull("provider")
-            modelId = m.safeNull("id")
-            modelName = m.safeNull("name")
-            modelContextWindow = if (m.isNull("contextWindow")) null else m.optLong("contextWindow")
-        } else { modelProvider = null; modelId = null; modelName = null; modelContextWindow = null }
-        thinkingLevel = s.optString("thinkingLevel", "off")
-        thinkingLevels = s.optJSONArray("thinkingLevels")?.let { arr ->
+        val mProv = m?.safeNull("provider")
+        val mId = m?.safeNull("id")
+        val mName = m?.safeNull("name")
+        val mWin = if (m != null && !m.isNull("contextWindow")) m.optLong("contextWindow") else null
+        val thLevel = s.optString("thinkingLevel", "off")
+        val thLevels = s.optJSONArray("thinkingLevels")?.let { arr ->
             List(arr.length()) { arr.optString(it) }
         }
+        _sessionState.value = SessionState(
+            sessionName = sName,
+            sessionFile = sFile,
+            modelProvider = mProv,
+            modelId = mId,
+            modelName = mName,
+            modelContextWindow = mWin,
+            thinkingLevel = thLevel,
+            thinkingLevels = thLevels,
+        )
         if (s.has("isStreaming")) _streaming.value = s.optBoolean("isStreaming", _streaming.value)
     }
 
@@ -417,7 +431,6 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
             "commands" -> {
                 val parsed = parseCommands(o.optJSONArray("commands"))
                 val existingNames = parsed.map { it.name }.toSet()
-                // Yerleşik komutlarla dinamik komutları birleştir
                 val merged = parsed + BUILTIN_COMMANDS.filter { it.name !in existingNames }
                 _commands.value = merged
             }

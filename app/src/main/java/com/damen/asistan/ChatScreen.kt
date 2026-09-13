@@ -44,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -98,7 +99,7 @@ fun ChatScreen(
     val qFollow by client.queueFollow.collectAsState()
     val statuses by client.statuses.collectAsState()
     val widgets by client.widgets.collectAsState()
-    client.stateTick.collectAsState()
+    val sessionState by client.sessionState.collectAsState()
 
     var inputVal by remember { mutableStateOf(TextFieldValue("")) }
     var pendingFiles by remember { mutableStateOf(JSONArray()) }
@@ -112,7 +113,7 @@ fun ChatScreen(
     val inputInteraction = remember { MutableInteractionSource() }
     val clipboard = remember { ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
 
-    // BUG 5: Dibe yakınlık tespiti derivedStateOf ile
+    // Dibe yakınlık tespiti
     val isAtBottom by remember {
         derivedStateOf {
             val info = listState.layoutInfo
@@ -177,7 +178,7 @@ fun ChatScreen(
         histIdx = -1
     }
 
-    val sessionKey = "damen-draft:${client.sessionFile ?: client.sessionName ?: "default"}"
+    val sessionKey = "damen-draft:${sessionState.sessionFile ?: sessionState.sessionName ?: "default"}"
     var lastKey by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(sessionKey) {
         if (lastKey == null) {
@@ -191,6 +192,18 @@ fun ChatScreen(
             inputVal = TextFieldValue(saved, TextRange(saved.length))
         }
         lastKey = sessionKey
+    }
+
+    // Lag optimizasyonu: Taslak kaydını 400ms debounce ile yap (her tuşta disk I/O yapma)
+    var draftJob by remember { mutableStateOf<Job?>(null) }
+    fun onInputChanged(newVal: TextFieldValue) {
+        inputVal = newVal
+        slashActive = 0
+        draftJob?.cancel()
+        draftJob = scope.launch {
+            delay(400)
+            try { prefs.edit().putString(sessionKey, newVal.text).apply() } catch (_: Exception) { }
+        }
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
@@ -269,7 +282,6 @@ fun ChatScreen(
             "new" -> { client.newSession() }
             "clear-queue" -> { client.abort() }
             else -> {
-                // Diğer komutlar (compact, name, extension/prompt/skill komutları) sunucuya gönderilir
                 val names = client.pendingNames(pendingFiles)
                 val files = pendingFiles
                 pendingFiles = JSONArray()
@@ -306,11 +318,13 @@ fun ChatScreen(
         scrollToBottom(animate = true)
     }
 
-    // Slash adayları: ^/([^\s]*)$ (trailing space yoksa popup açık)
+    // Slash adayları: hızlı string kontrolü (regex maliyeti yok)
     val slashItems = remember(inputVal.text, commands) {
-        val mm = Regex("""^/([^\s]*)$""").matchEntire(inputVal.text) ?: return@remember null
-        val prefix = mm.groupValues[1].lowercase()
-        commands.filter { it.name.lowercase().startsWith(prefix) }
+        val t = inputVal.text
+        if (t.startsWith("/") && !t.contains(" ")) {
+            val prefix = t.drop(1).lowercase()
+            commands.filter { it.name.lowercase().startsWith(prefix) }
+        } else null
     }
     val slashOpen = slashItems != null && slashItems.isNotEmpty()
 
@@ -322,13 +336,11 @@ fun ChatScreen(
     BackHandler(enabled = modelSheet) { modelSheet = false }
     BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
 
-    // BUG 2 FIX: safe title
-    val sessionLabel = cleanSessionTitle(client.sessionName, null, client.sessionFile, "—")
+    val sessionLabel = cleanSessionTitle(sessionState.sessionName, null, sessionState.sessionFile, "—")
 
-    // BUG 1 FIX: Durum şeridi kararlı görünürlük ve sabit yükseklik
+    // Durum şeridi kararlılığı: model yüklendiğinde kalıcı olarak açık kalır
     val hasStats = stats != null && (stats?.totalTokens != null || stats?.cost != null || stats?.contextPercent != null)
-    val stripVisible = statuses.isNotEmpty() || widgets.isNotEmpty() || hasStats || client.modelId != null
-    val stripVScroll = rememberScrollState()
+    val stripVisible = statuses.isNotEmpty() || widgets.isNotEmpty() || hasStats || sessionState.modelId != null
     val stripHScroll = rememberScrollState()
     val statsHScroll = rememberScrollState()
 
@@ -358,7 +370,7 @@ fun ChatScreen(
                         Text(Lang.t("noSessions"), fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Faint, modifier = Modifier.padding(12.dp))
                     }
                     itemsIndexed(sessions, key = { _, s -> s.path }) { _, s ->
-                        val active = s.path == client.sessionFile
+                        val active = s.path == sessionState.sessionFile
                         val title = cleanSessionTitle(s.name, s.title, s.path, "oturum")
                         val meta = buildString {
                             append(fmtTime(s.modified))
@@ -417,7 +429,6 @@ fun ChatScreen(
                 Divider(color = Damen.LineDim, thickness = 1.dp)
             },
             bottomBar = {
-                // BUG 3 FIX: Navigation bars ve IME birleşimi — klavye açılınca bar klavyenin tam üstüne kalkar
                 Column(
                     modifier = Modifier.background(Damen.Bg)
                         .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
@@ -435,30 +446,27 @@ fun ChatScreen(
                         Divider(color = Damen.LineDim, thickness = 1.dp)
                     }
 
-                    // BUG 1 FIX: Durum ve istatistik şeridi — SABİT BOY + DİKEY & YATAY KAYDIRILABİLİR
+                    // DURUM & İSTATİSTİK ŞERİDİ (Flicker engellendi: model varsa kalıcıdır)
                     if (stripVisible) {
                         Column(
                             modifier = Modifier.fillMaxWidth()
-                                .heightIn(max = 68.dp)
-                                .verticalScroll(stripVScroll)
                                 .padding(horizontal = 12.dp, vertical = 4.dp),
                         ) {
                             if (statuses.isNotEmpty() || widgets.isNotEmpty()) {
                                 Row(
-                                    modifier = Modifier.horizontalScroll(stripHScroll),
+                                    modifier = Modifier.horizontalScroll(stripHScroll).padding(bottom = 2.dp),
                                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                                 ) {
                                     statuses.forEach { Text(it, fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Dim) }
                                     widgets.forEach { Text(it, fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Dim) }
                                 }
                             }
-                            StatsLine(client, stats, statsHScroll)
+                            StatsLine(sessionState, stats, statsHScroll)
                         }
                         Divider(color = Damen.LineDim, thickness = 1.dp)
                     }
 
-                    // YENİDEN TASARLANAN SLASH KOMUT POPUP'I
-                    // Mesaj alanının üstünde yüzen (floating), kaydırılabilir, şık popup
+                    // SLASH KOMUT POPUP'I
                     if (slashOpen) {
                         Surface(
                             modifier = Modifier.fillMaxWidth()
@@ -529,11 +537,7 @@ fun ChatScreen(
 
                         TextField(
                             value = inputVal,
-                            onValueChange = {
-                                inputVal = it
-                                slashActive = 0
-                                try { prefs.edit().putString(sessionKey, it.text).apply() } catch (_: Exception) { }
-                            },
+                            onValueChange = { onInputChanged(it) },
                             modifier = Modifier.weight(1f)
                                 .focusRequester(inputFocusRequester)
                                 .onPreviewKeyEvent { e ->
@@ -634,7 +638,6 @@ fun ChatScreen(
                     var noticeIdx = 0
                     val sortedNotices = notices
 
-                    // BUG 4 FIX: LazyColumn optimize edildi; immutable item'lar sayesinde canlı akışta geçmiş turn'ler yeniden hesaplanmaz
                     LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
                         messages.forEachIndexed { mi, m ->
                             if (m.role == "user" || m.role == "assistant") {
@@ -672,7 +675,6 @@ fun ChatScreen(
                     }
                 }
 
-                // BUG 5 FIX: Aşağı kaydırma FAB'ı tam olarak dipte olunmadığında görünür ve tıklandığında alta kaydırır
                 AnimatedVisibility(
                     visible = !isAtBottom && (messages.isNotEmpty() || live.isNotEmpty()),
                     enter = fadeIn(),
@@ -861,6 +863,12 @@ private fun ToolCard(
         }
     }
     val bg = when { isError -> Damen.ErrBg; phase == "running" -> Damen.RunBg; else -> Damen.OkBg }
+    val sub = remember(argsRaw, args) { toolSubtitle(argsRaw ?: args) }
+    val preview = remember(output, args) {
+        val raw = if (output.isNotBlank()) output.take(300) else args.take(300)
+        raw.replace(Regex("\\s+"), " ").trim().take(200)
+    }
+
     Column(modifier = Modifier.background(bg)) {
         Row(
             modifier = Modifier.fillMaxWidth()
@@ -880,7 +888,6 @@ private fun ToolCard(
                 else -> Text("✓", fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Ok)
             }
             Text(name, fontFamily = Damen.Mono, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Damen.Fg)
-            val sub = toolSubtitle(argsRaw ?: args)
             var subEx by remember { mutableStateOf(false) }
             if (sub.isNotEmpty()) {
                 Text(
@@ -898,13 +905,12 @@ private fun ToolCard(
                 }
             }
         }
-        val preview = (output.ifNotBlank { output } ?: args).replace(Regex("\\s+"), " ").trim().take(200)
         if (!open && preview.isNotEmpty()) {
             Text(preview, fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Faint, maxLines = 1, modifier = Modifier.padding(start = 32.dp, end = 10.dp, bottom = 6.dp))
         }
         if (open) {
             Column(modifier = Modifier.padding(8.dp, 10.dp)) {
-                val editInfo = if (name == "edit") normalizeEdits(argsRaw ?: args) else null
+                val editInfo = remember(name, argsRaw, args) { if (name == "edit") normalizeEdits(argsRaw ?: args) else null }
                 if (editInfo != null) {
                     val (path, edits) = editInfo
                     if (!path.isNullOrBlank()) {
@@ -957,20 +963,18 @@ private fun ToolCard(
     Divider(color = Damen.LineDim, thickness = 1.dp)
 }
 
-private fun String.ifNotBlank(f: () -> String): String = if (isNotBlank()) this else f()
-
 @Composable
-private fun StatsLine(client: GwClient, stats: Stats?, scrollState: androidx.compose.foundation.ScrollState) {
-    val modelTxt = (client.modelName ?: client.modelId ?: "").uppercase()
+private fun StatsLine(sessionState: SessionState, stats: Stats?, scrollState: androidx.compose.foundation.ScrollState) {
+    val modelTxt = (sessionState.modelName ?: sessionState.modelId ?: "").uppercase()
     val pct = stats?.contextPercent
-    val win = stats?.contextWindow ?: client.modelContextWindow
+    val win = stats?.contextWindow ?: sessionState.modelContextWindow
     val cls = if (pct != null && pct >= 80) Damen.Accent else if (pct != null && pct >= 50) Damen.Dim else Damen.Faint
     Row(
         modifier = Modifier.padding(top = 2.dp).horizontalScroll(scrollState),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         if (modelTxt.isNotEmpty()) Text(modelTxt, fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 1.1.sp, color = Damen.Faint)
-        Text(client.thinkingLevel.uppercase(), fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 1.1.sp, color = Damen.Faint)
+        Text(sessionState.thinkingLevel.uppercase(), fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 1.1.sp, color = Damen.Faint)
         if (pct != null) Text("CTX %.1f%%%s".format(pct, if (win != null) "/${fmtTokens(win)}" else ""), fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 1.1.sp, color = cls)
         else if (win != null) Text("CTX /${fmtTokens(win)}", fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 1.1.sp, color = Damen.Faint)
         if (stats?.cost != null) Text("$%.4f".format(stats.cost), fontFamily = Damen.Mono, fontSize = 10.sp, letterSpacing = 1.1.sp, color = Damen.Faint)
@@ -982,8 +986,8 @@ private fun StatsLine(client: GwClient, stats: Stats?, scrollState: androidx.com
 @Composable
 private fun ModelSheet(client: GwClient, query: String, onQuery: (String) -> Unit, onClose: () -> Unit) {
     val models by client.models.collectAsState()
-    client.stateTick.collectAsState()
-    val levels = client.thinkingLevels?.takeIf { it.isNotEmpty() } ?: ALL_LEVELS
+    val sessionState by client.sessionState.collectAsState()
+    val levels = sessionState.thinkingLevels?.takeIf { it.isNotEmpty() } ?: ALL_LEVELS
     val q = query.trim().lowercase()
     val list = if (q.isEmpty()) models else models.filter { "${it.name} ${it.id} ${it.provider}".lowercase().contains(q) }
     ModalBottomSheet(
@@ -1017,7 +1021,7 @@ private fun ModelSheet(client: GwClient, query: String, onQuery: (String) -> Uni
                 Micro(Lang.t("thinking"), Damen.Dim)
                 Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     levels.forEach { lv ->
-                        val active = lv == client.thinkingLevel
+                        val active = lv == sessionState.thinkingLevel
                         Box(modifier = Modifier.border(1.dp, if (active) Damen.Accent else Damen.Line).clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
@@ -1033,7 +1037,7 @@ private fun ModelSheet(client: GwClient, query: String, onQuery: (String) -> Uni
                     Text(Lang.t("noModels"), fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Faint, modifier = Modifier.padding(14.dp))
                 }
                 itemsIndexed(list, key = { _, m -> m.provider + "/" + m.id }) { _, m ->
-                    val active = client.modelProvider == m.provider && client.modelId == m.id
+                    val active = sessionState.modelProvider == m.provider && sessionState.modelId == m.id
                     Row(
                         modifier = Modifier.fillMaxWidth()
                             .clickable { client.setModel(m.provider, m.id); onClose() }
