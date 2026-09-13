@@ -35,6 +35,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -105,6 +107,7 @@ fun ChatScreen(
     val live by client.live.collectAsState()
     val streaming by client.streaming.collectAsState()
     val sessions by client.sessions.collectAsState()
+    val sessionsTick by client.sessionsTick.collectAsState()
     val models by client.models.collectAsState()
     val commands by client.commands.collectAsState()
     val notices by client.notices.collectAsState()
@@ -414,6 +417,18 @@ fun ChatScreen(
             client.connect(token)
             client.listSessions()
             client.listModels()
+        }
+    }
+
+    // Uygulama açılışı: eski session'a devam ETME — boş session varsa ona geç,
+    // yoksa yeni aç. Tek seferlik (ilk sessions yanıtında karar verilir).
+    var freshStartDone by remember { mutableStateOf(false) }
+    LaunchedEffect(sessionsTick) {
+        if (!freshStartDone && sessionsTick > 0 && token.isNotBlank()) {
+            freshStartDone = true
+            val empty = sessions.firstOrNull { it.messageCount == 0 }
+            if (empty != null) client.switchSession(empty.path)
+            else client.newSession()
         }
     }
 
@@ -815,9 +830,15 @@ fun ChatScreen(
                             if (isListening) {
                                 val inf = rememberInfiniteTransition(label = "mic_main")
                                 val a by inf.animateFloat(1f, 0.3f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "mic_main")
-                                Text("🎙", fontSize = 16.sp, modifier = Modifier.alpha(a))
+                                Icon(
+                                    Icons.Outlined.Mic, contentDescription = "dinleniyor",
+                                    tint = Damen.Accent, modifier = Modifier.size(18.dp).alpha(a),
+                                )
                             } else {
-                                Text("🎙", fontSize = 16.sp, color = Damen.Dim)
+                                Icon(
+                                    Icons.Outlined.Mic, contentDescription = "mikrofon",
+                                    tint = Damen.Dim, modifier = Modifier.size(18.dp),
+                                )
                             }
                         }
 

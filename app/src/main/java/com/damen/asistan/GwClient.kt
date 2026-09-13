@@ -224,6 +224,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
     private val _live = MutableStateFlow<List<LiveSeg>>(emptyList()); val live: StateFlow<List<LiveSeg>> = _live
     private val _streaming = MutableStateFlow(false); val streaming: StateFlow<Boolean> = _streaming
     private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList()); val sessions: StateFlow<List<SessionInfo>> = _sessions
+    private val _sessionsTick = MutableStateFlow(0); val sessionsTick: StateFlow<Int> = _sessionsTick
     private val _models = MutableStateFlow<List<ModelInfo>>(emptyList()); val models: StateFlow<List<ModelInfo>> = _models
     private val _commands = MutableStateFlow<List<Cmd>>(BUILTIN_COMMANDS); val commands: StateFlow<List<Cmd>> = _commands
     private val _notices = MutableStateFlow<List<Notice>>(emptyList()); val notices: StateFlow<List<Notice>> = _notices
@@ -537,6 +538,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
                     )
                 }
                 _sessions.value = list
+                _sessionsTick.value++
             }
             "models" -> {
                 val arr = o.optJSONArray("models"); val list = mutableListOf<ModelInfo>()

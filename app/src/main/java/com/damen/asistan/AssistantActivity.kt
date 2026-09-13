@@ -32,7 +32,10 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -435,10 +438,11 @@ private fun AssistantScreen(
                     client.connect(cfg.token)
                     withTimeoutOrNull(2000) { client.conn.first { it == Conn.Open } }
                 }
-                // Oturumu doğrula
-                val saved = prefs.getString("assistant_session", null)
-                if (!saved.isNullOrBlank()) {
-                    client.switchSession(saved)
+                // Asistan her mesajda YENİ session açar — son session'a devam etmez.
+                val prev = client.sessionFile
+                client.newSession()
+                withTimeoutOrNull(10000) {
+                    client.sessionState.first { it.sessionFile != null && it.sessionFile != prev }
                 }
                 // Mesajı fırlat
                 client.sendPrompt(text, files)
@@ -594,9 +598,15 @@ private fun AssistantScreen(
                     if (isListening) {
                         val inf = rememberInfiniteTransition(label = "mic")
                         val a by inf.animateFloat(1f, 0.3f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "mic")
-                        Text("🎙", fontSize = 16.sp, modifier = Modifier.alpha(a))
+                        Icon(
+                            Icons.Outlined.Mic, contentDescription = "dinleniyor",
+                            tint = Damen.Accent, modifier = Modifier.size(18.dp).alpha(a),
+                        )
                     } else {
-                        Text("🎙", fontSize = 16.sp, color = Damen.Dim)
+                        Icon(
+                            Icons.Outlined.Mic, contentDescription = "mikrofon",
+                            tint = Damen.Dim, modifier = Modifier.size(18.dp),
+                        )
                     }
                 }
 
