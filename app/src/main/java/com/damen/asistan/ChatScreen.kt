@@ -864,27 +864,27 @@ fun ChatScreen(
                                 is FeedItem.Group -> {
                                     num++
                                     val n = num
-                                    item(key = "g$gi") { Turn(n, g.role, g.msgs) }
+                                    item(key = "g$gi", contentType = "turn") { Turn(n, g.role, g.msgs) }
                                     g.endIdx
                                 }
                                 is FeedItem.Bash -> {
-                                    item(key = "g$gi") { BashTurn(num + 1, g.msg) }
+                                    item(key = "g$gi", contentType = "bash") { BashTurn(num + 1, g.msg) }
                                     g.endIdx
                                 }
                             }
                             while (noticeIdx < sortedNotices.size && sortedNotices[noticeIdx].at <= end + 1) {
                                 val nt = sortedNotices[noticeIdx]
-                                item(key = "n$noticeIdx") { NoticeRow(nt) }
+                                item(key = "n$noticeIdx", contentType = "notice") { NoticeRow(nt) }
                                 noticeIdx++
                             }
                         }
                         while (noticeIdx < sortedNotices.size) {
                             val nt = sortedNotices[noticeIdx]
-                            item(key = "n$noticeIdx") { NoticeRow(nt) }
+                            item(key = "n$noticeIdx", contentType = "notice") { NoticeRow(nt) }
                             noticeIdx++
                         }
                         if (live.isNotEmpty()) {
-                            item(key = "live") {
+                            item(key = "live", contentType = "live") {
                                 Column(modifier = Modifier.padding(12.dp, 14.dp)) {
                                     live.forEachIndexed { li, seg ->
                                         when (seg) {
@@ -898,7 +898,7 @@ fun ChatScreen(
                             }
                         }
                         // DAİMA sonda duran 1px hedef item: scrollToItem(son) her koşulda gerçek dibe çeker
-                        item(key = "end") { Spacer(Modifier.height(1.dp)) }
+                        item(key = "end", contentType = "end") { Spacer(Modifier.height(1.dp)) }
                     }
                 }
 
@@ -1050,9 +1050,9 @@ private fun BashTurn(num: Int, m: ChatMsg) {
 /** Canlı akış metni: her 120ms flush'ta markdown parse ETME — düz monospace Text.
  *  (Uzun metinlerde parse her flush'ta tüm metni yeniden işliyordu → lag.)
  *  Settled olunca kayıt defteri Turn'ü MdBody ile tam markdown çizer. */
-/** Uzun kayıt mesajları: fling sırasında 100k karakterlik item'ı ölçmek jank yaratır.
- *  İlk ~200 satır çizilir, uzunsa "devamını göster" açılır. Satır sınırında kesildiği
- *  için markdown blokları genelde bütün kalır. */
+/** Uzun kayıt mesajları: fling/yukarı-kaydırma sırasında 100k karakterlik item'ın İLK
+ *  ölçümü jank yaratır (ölçülmüş item ucuzlar — "kullandıkça azalıyor" hissi bu).
+ *  İlk ~60 satır çizilir, uzunsa "devamını göster" açılır. */
 @Composable
 private fun CappedMd(text: String) {
     var expanded by remember { mutableStateOf(false) }
@@ -1061,7 +1061,7 @@ private fun CappedMd(text: String) {
         else {
             var nl = 0
             var idx = -1
-            while (nl < 200) {
+            while (nl < 60) {
                 idx = text.indexOf('\n', idx + 1)
                 if (idx < 0) break
                 nl++
@@ -1091,7 +1091,7 @@ private fun CappedMd(text: String) {
 @Composable
 private fun LiveText(text: String) {
     val shown = remember(text) {
-        text.takeLast(12_000)
+        text.takeLast(8_000)
     }
     Text(
         shown, fontFamily = Damen.Mono, fontSize = 14.sp, lineHeight = 21.sp,

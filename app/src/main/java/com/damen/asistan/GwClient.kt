@@ -443,7 +443,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
         if (s.has("isStreaming")) _streaming.value = s.optBoolean("isStreaming", _streaming.value)
     }
 
-    private fun onJson(raw: String) {
+    private suspend fun onJson(raw: String) {
         val o = try { JSONObject(raw) } catch (_: Exception) { return }
         when (o.optString("type")) {
             "hello" -> {
@@ -474,14 +474,17 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
                     return
                 }
                 if (slot != null) viewSlot = slot
-                _messages.value = parseMessages(o.optJSONArray("messages"))
+                // Büyük session'ların parse'ı ana thread'i kilitliyordu (açılış jank'ı) — IO'da yap.
+                val settledMsgs = withContext(Dispatchers.IO) { parseMessages(o.optJSONArray("messages")) }
+                _messages.value = settledMsgs
                 liveWorking.clear(); liveDirty = true; _live.value = emptyList()
                 _stats.value = parseStats(o.optJSONObject("stats"))
                 applyState(o.optJSONObject("state"))
             }
             "switched" -> {
                 o.optInt("slot", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }?.let { viewSlot = it }
-                _messages.value = parseMessages(o.optJSONArray("messages"))
+                val switchedMsgs = withContext(Dispatchers.IO) { parseMessages(o.optJSONArray("messages")) }
+                _messages.value = switchedMsgs
                 _notices.value = emptyList()
                 liveWorking.clear(); liveDirty = true; _live.value = emptyList()
                 _streaming.value = false
