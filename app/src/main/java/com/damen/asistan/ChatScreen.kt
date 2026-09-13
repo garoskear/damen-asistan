@@ -188,9 +188,11 @@ fun ChatScreen(
         val total = listState.layoutInfo.totalItemsCount
         if (total > 0) {
             try {
-                // Sondaki 1px boşluk item'ına AT_TOP kaydırmak clamp nedeniyle DAİMA gerçek dibe
+                // Sondaki 1px boşluk item'ına kaydırmak clamp nedeniyle DAİMA gerçek dibe
                 // götürür (son mesaj ekrandan uzun olsa bile) — ScrollToItemAlignment bu
                 // sürümde yok, alignment yerine spacer numarası kullanılır.
+                // (Canlı akışta içerik büyürken total sabit kalır — o yüzden burada
+                // hedef-değişti kontrolü YOK, her çağrı gerçekten kaydırır.)
                 listState.scrollToItem(total - 1)
             } catch (_: Exception) { }
         }
@@ -201,7 +203,8 @@ fun ChatScreen(
         scope.launch {
             // +1: her zaman sonda duran 1px boşluk item'ı
             val expected = feedSizeRef + noticeCountRef + (if (!liveEmptyRef) 1 else 0) + 1
-            if (expected > 0) {
+            // Hızlı yol: layout zaten hedefi saymışsa bekleme akışını hiç kurma.
+            if (expected <= 0 || listState.layoutInfo.totalItemsCount < expected) {
                 withTimeoutOrNull(2000) {
                     snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it >= expected }
                 }
@@ -554,6 +557,11 @@ fun ChatScreen(
                     }
                 }
                 Divider(color = Damen.LineDim, thickness = 1.dp)
+                // Kurul sürüm: hangi APK'nın yüklü olduğunu tek bakışta doğrular.
+                Text(
+                    "v" + BuildConfig.VERSION_NAME, fontFamily = Damen.Mono, fontSize = 10.sp,
+                    color = Damen.Faint, modifier = Modifier.padding(start = 12.dp, top = 6.dp, bottom = 2.dp),
+                )
                 LazyColumn(modifier = Modifier.weight(1f)) {
                     if (sessions.isEmpty()) item {
                         Text(Lang.t("noSessions"), fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Faint, modifier = Modifier.padding(12.dp))
@@ -1003,7 +1011,7 @@ private fun Turn(num: Int, role: String, msgs: List<ChatMsg>) {
         msgs.forEach { m ->
             m.parts.forEach { p ->
                 when (p) {
-                    is Part.Text -> if (p.text.isNotBlank()) MdBody(p.text)
+                    is Part.Text -> if (p.text.isNotBlank()) CappedMd(p.text)
                     is Part.Thinking -> {
                         var ex by remember { mutableStateOf(false) }
                         ThinkingBlock(p.thinking, ex) { ex = !ex }
@@ -1042,10 +1050,48 @@ private fun BashTurn(num: Int, m: ChatMsg) {
 /** Canlı akış metni: her 120ms flush'ta markdown parse ETME — düz monospace Text.
  *  (Uzun metinlerde parse her flush'ta tüm metni yeniden işliyordu → lag.)
  *  Settled olunca kayıt defteri Turn'ü MdBody ile tam markdown çizer. */
+/** Uzun kayıt mesajları: fling sırasında 100k karakterlik item'ı ölçmek jank yaratır.
+ *  İlk ~200 satır çizilir, uzunsa "devamını göster" açılır. Satır sınırında kesildiği
+ *  için markdown blokları genelde bütün kalır. */
+@Composable
+private fun CappedMd(text: String) {
+    var expanded by remember { mutableStateOf(false) }
+    val cut = remember(text) {
+        if (expanded) null
+        else {
+            var nl = 0
+            var idx = -1
+            while (nl < 200) {
+                idx = text.indexOf('\n', idx + 1)
+                if (idx < 0) break
+                nl++
+            }
+            if (idx < 0 || idx >= text.length - 1) null else text.substring(0, idx)
+        }
+    }
+    if (cut != null) {
+        MdBody(cut)
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                .border(1.dp, Damen.Line)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { expanded = true }
+                .padding(vertical = 6.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("▼ devamını göster", fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Dim)
+        }
+    } else {
+        MdBody(text)
+    }
+}
+
 @Composable
 private fun LiveText(text: String) {
     val shown = remember(text) {
-        text.takeLast(30_000)
+        text.takeLast(12_000)
     }
     Text(
         shown, fontFamily = Damen.Mono, fontSize = 14.sp, lineHeight = 21.sp,

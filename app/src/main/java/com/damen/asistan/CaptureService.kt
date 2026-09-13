@@ -28,17 +28,34 @@ class CaptureService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val resultCode = intent?.getIntExtra(EXTRA_CODE, -1) ?: -1
-        val data: Intent? = if (Build.VERSION.SDK_INT >= 33) {
-            intent?.getParcelableExtra(EXTRA_DATA, Intent::class.java)
-        } else {
-            @Suppress("DEPRECATION") intent?.getParcelableExtra(EXTRA_DATA)
-        }
-        if (resultCode == -1 || data == null) { stopSelf(); return START_NOT_STICKY }
-        startFg()
-        scope.launch {
-            try { capture(resultCode, data) } catch (_: Exception) { }
-            withContext(Dispatchers.Main) { stopSelf() }
+        try {
+            val resultCode = intent?.getIntExtra(EXTRA_CODE, -1) ?: -1
+            val data: Intent? = if (Build.VERSION.SDK_INT >= 33) {
+                intent?.getParcelableExtra(EXTRA_DATA, Intent::class.java)
+            } else {
+                @Suppress("DEPRECATION") intent?.getParcelableExtra(EXTRA_DATA)
+            }
+            if (resultCode == -1 || data == null) { stopSelf(); return START_NOT_STICKY }
+            // SIRA KRİTİK (API 34+): önce aktif MediaProjection alınır, SONRA mediaProjection
+            // tipli foreground başlatılır. Tersi SecurityException → servis/process ölümü.
+            val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val mp = try {
+                mpManager.getMediaProjection(resultCode, data)
+            } catch (e: Exception) {
+                DamenLog.log("SHOT", "getMediaProjection fail: ${e.message}")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            startFg()
+            scope.launch {
+                try { capture(mp) } catch (e: Exception) {
+                    DamenLog.log("SHOT", "capture fail: ${e.message}")
+                }
+                withContext(Dispatchers.Main) { stopSelf() }
+            }
+        } catch (e: Exception) {
+            DamenLog.log("SHOT", "onStartCommand fail: ${e.message}")
+            try { stopSelf() } catch (_: Exception) { }
         }
         return START_NOT_STICKY
     }
@@ -60,9 +77,7 @@ class CaptureService : Service() {
         }
     }
 
-    private suspend fun capture(resultCode: Int, data: Intent) {
-        val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val mp = mpManager.getMediaProjection(resultCode, data)
+    private suspend fun capture(mp: android.media.projection.MediaProjection) {
         val metrics = resources.displayMetrics
         val w = metrics.widthPixels; val h = metrics.heightPixels
         val reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
