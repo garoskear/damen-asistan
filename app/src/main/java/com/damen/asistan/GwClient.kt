@@ -66,7 +66,11 @@ fun summarizeArgs(args: Any?): String {
     if (args == null) return ""
     if (args is String) return args
     return try {
-        val s = JSONObject.wrap(args)?.toString(1) ?: args.toString()
+        val s = when (args) {
+            is JSONObject -> args.toString(1)
+            is JSONArray -> args.toString(1)
+            else -> args.toString()
+        }
         if (s.length > 2000) s.take(2000) + "…" else s
     } catch (_: Exception) { args.toString() }
 }
@@ -93,22 +97,22 @@ fun normalizeEdits(raw: Any?): Pair<String?, List<Pair<String, String>>>? {
 }
 
 /** Satır diff'i LCS (web lineDiff). Büyük blokta null → ham metin. */
-fun lineDiff(a: String, b: String): List<Triple<Char, String>>? {
+fun lineDiff(a: String, b: String): List<Pair<Char, String>>? {
     val A = a.split("\n"); val B = b.split("\n")
     if (A.size > 500 || B.size > 500) return null
     val n = A.size; val m = B.size
     val dp = Array(n + 1) { IntArray(m + 1) }
     for (i in n - 1 downTo 0) for (j in m - 1 downTo 0)
         dp[i][j] = if (A[i] == B[j]) dp[i + 1][j + 1] + 1 else maxOf(dp[i + 1][j], dp[i][j + 1])
-    val ops = mutableListOf<Triple<Char, String>>()
+    val ops = mutableListOf<Pair<Char, String>>()
     var i = 0; var j = 0
     while (i < n && j < m) {
-        if (A[i] == B[j]) { ops += Triple(' ', A[i]); i++; j++ }
-        else if (dp[i + 1][j] >= dp[i][j + 1]) { ops += Triple('−', A[i]); i++ }
-        else { ops += Triple('+', B[j]); j++ }
+        if (A[i] == B[j]) { ops += Pair(' ', A[i]); i++; j++ }
+        else if (dp[i + 1][j] >= dp[i][j + 1]) { ops += Pair('−', A[i]); i++ }
+        else { ops += Pair('+', B[j]); j++ }
     }
-    while (i < n) { ops += Triple('−', A[i]); i++ }
-    while (j < m) { ops += Triple('+', B[j]); j++ }
+    while (i < n) { ops += Pair('−', A[i]); i++ }
+    while (j < m) { ops += Pair('+', B[j]); j++ }
     return ops
 }
 

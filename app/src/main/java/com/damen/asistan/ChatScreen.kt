@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -344,7 +345,7 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
                                             .padding(start = if (idx == slashActive) 10.dp else 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp)
                                             .then(if (idx == slashActive) Modifier.startBorder(2.dp, color = Damen.Accent) else Modifier),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                        verticalAlignment = Alignment.Baseline,
+                                        verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Text("/" + c.name, fontFamily = Damen.Mono, fontSize = 13.sp, color = Damen.Fg)
                                         Text(
@@ -550,7 +551,7 @@ private fun RecDot() {
 @Composable
 private fun Turn(num: Int, m: ChatMsg, client: GwClient, tick: Int) {
     Column(modifier = Modifier.padding(12.dp, 14.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Baseline) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(num.toString().padStart(2, '0'), fontFamily = Damen.Mono, fontSize = 10.sp, color = Damen.Faint)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Micro(if (m.role == "user") Lang.t("you") else Lang.t("assistant"), Damen.Dim)
@@ -577,7 +578,7 @@ private fun Turn(num: Int, m: ChatMsg, client: GwClient, tick: Int) {
 @Composable
 private fun BashTurn(num: Int, m: ChatMsg) {
     Column(modifier = Modifier.padding(12.dp, 14.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Baseline) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(num.toString().padStart(2, '0'), fontFamily = Damen.Mono, fontSize = 10.sp, color = Damen.Faint)
             Micro("BASH", Damen.Dim, Modifier.weight(1f))
         }
@@ -820,7 +821,7 @@ private fun ModelSheet(client: GwClient, query: String, onQuery: (String) -> Uni
                             .padding(start = if (active) 12.dp else 14.dp, end = 14.dp, top = 11.dp, bottom = 11.dp)
                             .then(if (active) Modifier.startBorder(2.dp, color = Damen.Accent) else Modifier),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.Baseline,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(m.name.ifBlank { m.id }, fontFamily = Damen.Mono, fontSize = 13.sp, color = Damen.Fg, modifier = Modifier.weight(1f))
                         Micro(m.provider, Damen.Faint)
@@ -832,6 +833,7 @@ private fun ModelSheet(client: GwClient, query: String, onQuery: (String) -> Uni
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DialogSheet(d: DialogState, commands: List<Cmd>, client: GwClient) {
     var field by remember(d.id, d.kind) { mutableStateOf(d.prefill) }
@@ -845,7 +847,7 @@ private fun DialogSheet(d: DialogState, commands: List<Cmd>, client: GwClient) {
                 Micro(Lang.t("helpTitle"), Damen.Dim)
                 Spacer(Modifier.height(12.dp))
                 commands.forEach { c ->
-                    Row(modifier = Modifier.padding(vertical = 7.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Baseline) {
+                    Row(modifier = Modifier.padding(vertical = 7.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("/" + c.name, fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Fg)
                         Text(
                             if (Lang.code == "tr") c.description else c.descriptionEn.ifBlank { c.description },

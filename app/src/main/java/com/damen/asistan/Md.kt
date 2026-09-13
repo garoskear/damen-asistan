@@ -64,7 +64,7 @@ fun parseMd(text: String): List<MdBlock> {
         val toks = t.split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (toks.isNotEmpty() && toks.all(::isAttachRef)) {
             flushPara()
-            val names = toks.map { baseName(it.slice(1).trimEnd('.', ',', ';', ':', '!', '?', ')')) }
+            val names = toks.map { baseName(it.drop(1).trimEnd('.', ',', ';', ':', '!', '?', ')')) }
             val last = out.lastOrNull()
             if (last is MdBlock.Chips) out[out.lastIndex] = MdBlock.Chips(last.names + names)
             else out += MdBlock.Chips(names)
