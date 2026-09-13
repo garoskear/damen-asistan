@@ -11,6 +11,7 @@ import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
@@ -184,19 +185,29 @@ fun ChipRow(names: List<String>, onRemove: ((Int) -> Unit)? = null) {
 
 @Composable
 fun MdBody(text: String) {
+    // Parse metin başına bir kez (canlı akışta her kare değil)
+    val blocks = remember(text) { parseMd(text) }
+    MdBlocks(blocks)
+}
+
+@Composable
+private fun MdBlocks(blocks: List<MdBlock>) {
     val uri = LocalUriHandler.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        for (b in parseMd(text)) {
+        for (b in blocks) {
             when (b) {
-                is MdBlock.Para -> ClickableText(
-                    text = inline(b.text),
-                    style = androidx.compose.ui.text.TextStyle(fontFamily = Damen.Mono, fontSize = 14.sp, lineHeight = 21.sp, color = Damen.Fg),
-                    onClick = { off ->
-                        inline(b.text).getStringAnnotations("URL", off, off).firstOrNull()?.let {
-                            try { uri.openUri(it.item) } catch (_: Exception) { }
-                        }
-                    },
-                )
+                is MdBlock.Para -> {
+                    val ann = remember(b.text) { inline(b.text) }
+                    ClickableText(
+                        text = ann,
+                        style = androidx.compose.ui.text.TextStyle(fontFamily = Damen.Mono, fontSize = 14.sp, lineHeight = 21.sp, color = Damen.Fg),
+                        onClick = { off ->
+                            ann.getStringAnnotations("URL", off, off).firstOrNull()?.let {
+                                try { uri.openUri(it.item) } catch (_: Exception) { }
+                            }
+                        },
+                    )
+                }
                 is MdBlock.Head -> Text(
                     b.text.uppercase(), fontFamily = Damen.Mono, fontSize = 14.sp,
                     fontWeight = FontWeight.Bold, letterSpacing = 0.9.sp, color = Damen.Fg,
@@ -220,13 +231,14 @@ fun MdBody(text: String) {
                 }
                 is MdBlock.ListBlock -> Column {
                     b.items.forEachIndexed { k, item ->
+                        val ann = remember(item) { inline(item) }
                         androidx.compose.foundation.layout.Row {
                             Text(
                                 if (b.ordered) "${k + 1}. " else "• ",
                                 fontFamily = Damen.Mono, fontSize = 14.sp, color = Damen.Dim,
                             )
                             Text(
-                                inline(item),
+                                ann,
                                 style = androidx.compose.ui.text.TextStyle(
                                     fontFamily = Damen.Mono, fontSize = 14.sp, color = Damen.Fg,
                                 ),

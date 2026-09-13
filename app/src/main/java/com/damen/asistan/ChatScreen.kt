@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -91,7 +92,6 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
     var modelQuery by remember { mutableStateOf("") }
     var slashActive by remember { mutableStateOf(0) }
     var stick by remember { mutableStateOf(true) }
-    var tick by remember { mutableStateOf(0) }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val listState = rememberLazyListState()
     val clipboard = remember { ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
@@ -151,19 +151,16 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
         }
     }
 
-    // Akan tool kartlarındaki süre hapları (1sn, kart kalmayınca durur)
-    val runningTools = live.filterIsInstance<LiveSeg.Tool>().count { it.phase == "running" }
-    LaunchedEffect(runningTools) {
-        while (runningTools > 0) { delay(1000); tick++ }
-    }
+    // Akan tool kartlarındaki süre hapları kartın kendi sayacında (tüm ekran uyanmaz)
 
-    // Yapışkan kaydırma: kullanıcı yukarı kaydırınca bırak, dibe inince tut
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) {
-            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()
-            val total = listState.layoutInfo.totalItemsCount
-            if (last != null && total > 0) stick = last.index >= total - 1
-        }
+    // Yapışkan kaydırma: layout akışından dibe-yapışık sinyali (sürükleme + içerik değişimi)
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            if (last == null || info.totalItemsCount == 0) true
+            else last.index >= info.totalItemsCount - 1
+        }.collect { atBottom -> stick = atBottom }
     }
     LaunchedEffect(messages.size, live, notices.size) {
         if (stick) {
@@ -403,6 +400,16 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
                                 try { prefs.edit().putString(sessionKey, it).apply() } catch (_: Exception) { }
                             },
                             modifier = Modifier.weight(1f)
+                                .onFocusChanged { st ->
+                                    if (st.isFocused) {
+                                        // Bara dokun = en aşağı git (nerede olursan ol)
+                                        stick = true
+                                        scope.launch {
+                                            val total = listState.layoutInfo.totalItemsCount
+                                            if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
+                                        }
+                                    }
+                                }
                                 .onPreviewKeyEvent { e ->
                                     if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                                     when {
@@ -471,7 +478,7 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
                             if (m.role == "user" || m.role == "assistant") {
                                 num++
                                 val n = num
-                                item(key = "m$mi") { Turn(n, m, client, tick) }
+                                item(key = "m$mi") { Turn(n, m, client) }
                             } else if (m.role == "bashExecution") {
                                 item(key = "m$mi") { BashTurn(num + 1, m) }
                             }
@@ -489,11 +496,11 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
                         if (live.isNotEmpty()) {
                             item(key = "live") {
                                 Column(modifier = Modifier.padding(12.dp, 14.dp)) {
-                                    live.forEach { seg ->
+                                    live.forEachIndexed { li, seg ->
                                         when (seg) {
-                                            is LiveSeg.Thinking -> if (seg.text.isNotEmpty()) ThinkingBlock(seg.text, seg.expanded) { seg.expanded = !seg.expanded; tick++ }
+                                            is LiveSeg.Thinking -> if (seg.text.isNotEmpty()) ThinkingBlock(seg.text, seg.expanded) { client.toggleLiveThinking(li) }
                                             is LiveSeg.Text -> if (seg.text.isNotEmpty()) MdBody(seg.text)
-                                            is LiveSeg.Tool -> ToolCard(seg.name, seg.args, seg.argsRaw, seg.output, seg.phase, seg.isError, seg.t0, tick)
+                                            is LiveSeg.Tool -> ToolCard(seg.name, seg.args, seg.argsRaw, seg.output, seg.phase, seg.isError, seg.t0)
                                         }
                                         Spacer(Modifier.height(6.dp))
                                     }
@@ -504,7 +511,13 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
                 }
                 if (!stick && (messages.isNotEmpty() || live.isNotEmpty())) {
                     OutlinedButton(
-                        onClick = { stick = true },
+                        onClick = {
+                            stick = true
+                            scope.launch {
+                                val total = listState.layoutInfo.totalItemsCount
+                                if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
+                            }
+                        },
                         modifier = Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = 14.dp),
                         border = androidx.compose.foundation.BorderStroke(1.dp, Damen.Line),
                     ) { Text("↓", fontFamily = Damen.Mono, fontSize = 16.sp, color = Damen.Fg) }
@@ -563,7 +576,7 @@ private fun RecDot() {
 }
 
 @Composable
-private fun Turn(num: Int, m: ChatMsg, client: GwClient, tick: Int) {
+private fun Turn(num: Int, m: ChatMsg, client: GwClient) {
     Column(modifier = Modifier.padding(12.dp, 14.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(num.toString().padStart(2, '0'), fontFamily = Damen.Mono, fontSize = 10.sp, color = Damen.Faint)
@@ -577,7 +590,7 @@ private fun Turn(num: Int, m: ChatMsg, client: GwClient, tick: Int) {
             when (p) {
                 is Part.Text -> if (p.text.isNotBlank()) MdBody(p.text)
                 is Part.Thinking -> { var ex by remember { mutableStateOf(false) }; ThinkingBlock(p.thinking, ex) { ex = !ex } }
-                is Part.ToolCall -> ToolCard(p.name, p.args, p.argsRaw, client.outputFor(p.id), "end", false, 0, tick)
+                is Part.ToolCall -> ToolCard(p.name, p.args, p.argsRaw, client.outputFor(p.id), "end", false, 0)
                 is Part.Image -> {
                     val ext = p.mime?.split("/")?.getOrNull(1) ?: ""
                     ChipRow(listOf(if (ext.isNotEmpty()) "image.$ext" else "image"))
@@ -650,9 +663,19 @@ private fun toolSubtitle(args: Any?): String {
 @Composable
 private fun ToolCard(
     name: String, args: String, argsRaw: Any?, output: String,
-    phase: String, isError: Boolean, t0: Long, tick: Int,
+    phase: String, isError: Boolean, t0: Long,
 ) {
     var open by remember { mutableStateOf(false) }
+    // Süre hapı: kartın kendi 1sn sayacı (bitince/ekrandan çıkınca durur)
+    var sec by remember { mutableStateOf(0L) }
+    LaunchedEffect(phase, t0) {
+        if (phase == "running") {
+            while (true) {
+                sec = if (t0 > 0) maxOf(0, (System.currentTimeMillis() - t0) / 1000) else 0
+                delay(1000)
+            }
+        }
+    }
     val bg = when { isError -> Damen.ErrBg; phase == "running" -> Damen.RunBg; else -> Damen.OkBg }
     Column(modifier = Modifier.background(bg)) {
         Row(
@@ -688,8 +711,6 @@ private fun ToolCard(
                 )
             } else Spacer(Modifier.weight(1f))
             if (phase == "running") {
-                val sec = if (t0 > 0) maxOf(0, (System.currentTimeMillis() - t0) / 1000) else 0
-                tick.let { }
                 Box(modifier = Modifier.border(1.dp, Damen.Line).padding(horizontal = 7.dp)) {
                     Text("${Lang.t("running")} ${sec}${Lang.t("secSuffix")}", fontFamily = Damen.Mono, fontSize = 10.sp, color = Damen.Dim)
                 }

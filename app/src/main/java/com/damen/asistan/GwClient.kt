@@ -163,6 +163,20 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
     private var toastSeq = 0L
     private val _stateTick = MutableStateFlow(0); val stateTick: StateFlow<Int> = _stateTick
 
+    // Canlı akış: deltada StateFlow'a yazılmaz; çalışma listesi 120ms'de bir flush'lanır.
+    // (web'deki rAF batch karşılığı — uzun cevapta kare başına tek çizim.)
+    private val liveWorking = mutableListOf<LiveSeg>()
+    private var liveDirty = false
+
+    init {
+        scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(120)
+                if (liveDirty) { liveDirty = false; _live.value = liveWorking.toList() }
+            }
+        }
+    }
+
     fun showHelp() { _dialog.value = DialogState(null, "help", "", "", emptyList(), "", "") }
     fun hideDialog() { _dialog.value = null }
 
@@ -179,7 +193,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
                 _conn.value = Conn.Open
                 sendRaw(JSONObject().put("type", "visibility").put("visible", true).toString())
             }
-            override fun onMessage(webSocket: WebSocket, text: String) { onJson(text) }
+            override fun onMessage(webSocket: WebSocket, text: String) { scope.launch { onJson(text) } }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 _conn.value = Conn.Error(t.message ?: "bağlantı hatası")
             }
@@ -230,6 +244,16 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
         val full = text + (if (atLines.isNotEmpty()) (if (text.isNotEmpty()) "\n" else "") + atLines.joinToString("\n") else "")
         val parts = if (full.isNotEmpty()) listOf(Part.Text(full)) else emptyList()
         _messages.value = _messages.value + ChatMsg("user", parts)
+    }
+
+    fun toggleLiveThinking(index: Int) {
+        scope.launch {
+            val s = liveWorking.getOrNull(index) ?: return@launch
+            if (s is LiveSeg.Thinking) {
+                liveWorking[index] = s.copy(expanded = !s.expanded)
+                liveDirty = true
+            }
+        }
     }
 
     fun pushNotice(text: String, level: String = "info") {
@@ -291,7 +315,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
                 }
                 if (slot != null) viewSlot = slot
                 _messages.value = parseMessages(o.optJSONArray("messages"))
-                _live.value = emptyList()
+                liveWorking.clear(); liveDirty = true; _live.value = emptyList()
                 _stats.value = parseStats(o.optJSONObject("stats"))
                 applyState(o.optJSONObject("state"))
             }
@@ -299,7 +323,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
                 o.optInt("slot", Int.MIN_VALUE).takeIf { it != Int.MIN_VALUE }?.let { viewSlot = it }
                 _messages.value = parseMessages(o.optJSONArray("messages"))
                 _notices.value = emptyList()
-                _live.value = emptyList()
+                liveWorking.clear(); liveDirty = true; _live.value = emptyList()
                 _streaming.value = false
                 _stats.value = parseStats(o.optJSONObject("stats"))
                 applyState(o.optJSONObject("state"))
@@ -320,9 +344,8 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
             "toolcall_end" -> {
                 if (!forView(o)) return
                 val id = if (o.isNull("id")) null else o.optString("id", null)
-                val cur = _live.value.toMutableList()
-                val seg = cur.filterIsInstance<LiveSeg.Tool>().find { it.id != null && it.id == id }
-                if (seg != null && seg.phase == "running") { seg.phase = "end"; _live.value = cur }
+                val seg = liveWorking.filterIsInstance<LiveSeg.Tool>().find { it.id != null && it.id == id }
+                if (seg != null && seg.phase == "running") { seg.phase = "end"; liveDirty = true }
             }
             "tool" -> {
                 if (!forView(o)) return
@@ -394,20 +417,18 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
 
     private fun liveDelta(kind: String, delta: String) {
         if (delta.isEmpty()) return
-        val cur = _live.value.toMutableList()
-        val last = cur.lastOrNull()
-        if (kind == "thinking" && last is LiveSeg.Thinking) cur[cur.lastIndex] = last.copy(text = (last.text + delta).takeLast(100_000))
-        else if (kind == "text" && last is LiveSeg.Text) cur[cur.lastIndex] = last.copy(text = (last.text + delta).takeLast(100_000))
-        else cur += if (kind == "thinking") LiveSeg.Thinking(delta) else LiveSeg.Text(delta)
-        _live.value = cur
+        val last = liveWorking.lastOrNull()
+        if (kind == "thinking" && last is LiveSeg.Thinking) liveWorking[liveWorking.lastIndex] = last.copy(text = (last.text + delta).takeLast(100_000))
+        else if (kind == "text" && last is LiveSeg.Text) liveWorking[liveWorking.lastIndex] = last.copy(text = (last.text + delta).takeLast(100_000))
+        else liveWorking += if (kind == "thinking") LiveSeg.Thinking(delta) else LiveSeg.Text(delta)
+        liveDirty = true
     }
 
     private fun liveTool(id: String?, name: String, args: Any?, phase: String, output: String?, isError: Boolean) {
-        val cur = _live.value.toMutableList()
-        var seg = cur.filterIsInstance<LiveSeg.Tool>().find { it.id == id }
+        var seg = liveWorking.filterIsInstance<LiveSeg.Tool>().find { it.id == id }
         if (seg == null) {
             seg = LiveSeg.Tool(id, name, "", args, "", "running", false)
-            cur += seg
+            liveWorking += seg
         }
         if (name.isNotBlank() && name != "?") seg.name = name
         when (phase) {
@@ -415,7 +436,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
             "update" -> { seg.output = (output ?: "").takeLast(100_000); seg.phase = "running" }
             "end" -> { seg.output = (output ?: "").takeLast(100_000); seg.phase = "end"; seg.isError = isError }
         }
-        _live.value = cur
+        liveDirty = true
     }
 
     private fun parseCommands(arr: JSONArray?): List<Cmd> {
