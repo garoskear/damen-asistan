@@ -3,20 +3,25 @@
 **Tarih:** 13 Eylül 2026  
 **Paket:** `com.damen.asistan`  
 **GitHub:** `garoskear/damen-asistan`  
-**Branch:** `main` (commit `227333e`)  
-**APK Konumu:** `/sdcard/Download/DamenAsistan.apk` (51.5 MB)  
-**CI Derlemesi:** GitHub Actions `APK` workflow run #34767927130 (Yeşil / Başarılı — 1m 22s)
+**Branch:** `main` (commit `f566980`)  
+**APK Konumu:** `/sdcard/Download/DamenAsistan.apk` (50 MB)  
+**CI Derlemesi:** GitHub Actions `APK` workflow run #34768730737 (Yeşil / Başarılı — 1m 41s)
 
 ---
 
 ## 1. Düzeltilen Hatalar ve Yapılan İyileştirmeler
 
 ### Bug 1: Mesaj Barı Üstündeki Durum Şeridi (Info Strip) Titremesi ve Sağa Kayması
-- **Sorun:** Durum şeridi (`statuses`, `widgets`, `stats`) durum değişimlerinde ve model yüklenirken kararsız görünürlük mantığı (`stripVisible`) yüzünden anlık olarak yok olup tekrar beliriyor (flicker), `rememberScrollState()` bileşenin ayrılıp tekrar girmesiyle sağa kayıyor veya sıfırlanıyordu.
+- **Sorun:** Durum şeridi (`statuses`, `widgets`, `stats`) arka plan görevleri (background-tasks eklentisi) her birkaç saniyede bir durum bildirdiğinde ve temizlediğinde, `client.modelId` Compose tarafından State olarak dinlenmediği için şerit bir görünüp bir kayboluyordu (flicker).
 - **Çözüm:** 
-  - Şerit `heightIn(max = 68.dp)` ile sabit üst sınırlı boyuta alındı.
-  - Şerit dikey ve yatay kaydırma durumları (`stripVScroll`, `stripHScroll`, `statsHScroll`) ekran düzeyinde hatırlandı (`rememberScrollState`).
-  - Görünürlük mantığı `statuses`, `widgets`, `hasStats` ve `modelId` varlığına göre kararlı hale getirildi, gereksiz yeniden boyutlanma ve sağa kayma engellendi.
+  - `SessionState` adında `@Immutable` reaktif bir StateFlow (`sessionState`) oluşturuldu. Model adı, id'si ve düşünme seviyesi Compose tarafından doğrudan dinlenir hale getirildi.
+  - Model hazır olduğunda şerit kalıcı olarak ekranda sabit durur; arka plan görevleri durum güncellediğinde şerit yok olmaz, içerik kararlı bir şekilde gösterilir.
+  - Şerit dikey ve yatay kaydırma durumları ekran düzeyinde hatırlandı; içerik güncellendiğinde sağa kayma veya sıfırlanma engellendi.
+
+### Ek Performans & Lag İyileştirmesi:
+- **Taslak (Draft) Debounce:** Her harf yazıldığında diske SharedPreferences `apply()` çağrısı yapılması kaldırıldı. 400ms debounce eklenerek yazma sırasındaki mikro takılmalar tamamen giderildi.
+- **Hızlı Önizleme (ToolCard):** 100.000 karakterlik çıktıların tamamına Regex replace çalıştırmak yerine ilk 300 karakter alınıp `remember` ile önbelleklendi; araç kartı çizimi anlık hale geldi.
+- **Slash Prefix Arama:** Regex derleme yerine `startsWith("/")` doğrudan karakter kontrolü ile optimize edildi.
 
 ### Bug 2: Eski Oturum Adlarında "null" Görünmesi
 - **Sorun:** Android `JSONObject.optString("name", null)` çağrısı, JSON değeri `null` olduğunda literal `"null"` stringi döndürür. Bu durum oturum başlıklarında ve drawer listesinde oturum adının `"null"` olarak yazılmasına yol açıyordu.
