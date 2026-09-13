@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -318,7 +319,11 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
                         Divider(color = Damen.LineDim, thickness = 1.dp)
                     }
                     if (stripVisible) {
-                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)) {
+                        Column(
+                            modifier = Modifier.heightIn(max = 88.dp)
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 12.dp, vertical = 5.dp),
+                        ) {
                             if (statuses.isNotEmpty() || widgets.isNotEmpty()) {
                                 Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                                     statuses.forEach { Text(it, fontFamily = Damen.Mono, fontSize = 11.sp, color = Damen.Dim) }
