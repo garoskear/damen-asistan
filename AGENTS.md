@@ -48,3 +48,17 @@ MainActivity (Compose, Nothing tema)
 - API 30+ paket görünürlüğü için `queries` (Termux) şart, yoksa launch intent bulunamaz.
 - Compose `@Composable` import'ları + `collectAsState` için `lifecycle-runtime-compose` gerekir.
 - AGP 8.2 signing: `getByName("debug")` düzenlenir, `create` çakışır.
+
+## v2 (2026-09-13, pi web paritesi)
+- Tema tokenları `Theme.kt` (style.css :root birebiri) + TR/EN `Lang` (i18n.js birebiri).
+- `Md.kt`: mini markdown (başlık/kod/liste/alıntı/tablo/chip) + satır içi kod/kalın/link.
+- `GwClient`: yapısal part'lar (text/thinking/toolCall/image, bashExecution), live segment sırası,
+  tool çıktı eşleştirme, edit LCS diff, komut/stats/queue/status/widget/dialog/toast/notices.
+- `ChatScreen`: topbar+rec, turn, tool kartı (süre hapı/önizleme/detay), bash, thinking,
+  jump FAB, kuyruk, strip+stats, kompozitör (slash/tray/steer/stop), drawer (meta/aktif/●),
+  model sheet (arama+seviye chip), dialog sheet (select/confirm/input/editor/help),
+  taslak+geçmiş (SharedPreferences), TR/EN, iyimser @satır balonu.
+- Üst boşluk: `enableEdgeToEdge` + şeffaf barlar + manuel inset.
+- Kurulan skill'ler: `hallmark` (tasarım), `mobile-android-design` (Compose/M3).
+- Bilinen eksik: donanım klavyesiz geçmiş gezinmesi (sadece fiziksel ↑/↓), pencere başına
+  thinking açık/kapalı durumu (web'de live'da seg'de yaşar — burada da seg'de).
