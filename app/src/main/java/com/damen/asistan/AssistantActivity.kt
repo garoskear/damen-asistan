@@ -275,25 +275,29 @@ private fun AssistantScreen(
         if (!f.exists() || f.length() <= 0L) { showToast("ekran görüntüsü bulunamadı"); return }
         if (f.length() > 20 * 1024 * 1024) { showToast("ekran görüntüsü çok büyük"); return }
         val shotPath = f.absolutePath
+        DamenLog.log("SHOT", "attach start: $shotPath (${f.length()} bytes)")
         scope.launch {
             try {
                 val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     File(shotPath).readBytes()
                 }
+                DamenLog.log("SHOT", "read OK: ${bytes.size} bytes")
                 if (bytes.isNotEmpty() && bytes.size <= 20 * 1024 * 1024) {
                     val b64 = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                         android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                     }
+                    DamenLog.log("SHOT", "b64 OK: ${b64.length} chars")
                     val merged = JSONArray()
                     for (i in 0 until pendingFiles.length()) merged.put(pendingFiles.get(i))
                     merged.put(JSONObject().put("name", "ekran.png").put("mime", "image/png").put("data", b64))
                     pendingFiles = merged
+                    DamenLog.log("SHOT", "attached OK: ${merged.length()} files")
                     showToast("+ ekran görüntüsü eklendi")
                 } else {
                     showToast("ekran görüntüsü boş veya çok büyük")
                 }
             } catch (e: Exception) {
-                android.util.Log.w("DAMEN", "attach fail: ${e.message}")
+                DamenLog.log("SHOT", "attach FAIL: ${e}")
                 showToast("eklenemedi: ${e.message ?: "hata"}")
             }
         }

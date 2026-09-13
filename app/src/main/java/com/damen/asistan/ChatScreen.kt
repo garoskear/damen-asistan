@@ -117,6 +117,44 @@ fun ChatScreen(
     val widgets by client.widgets.collectAsState()
     val sessionState by client.sessionState.collectAsState()
 
+    // FEED hesabı: ardışık aynı roldeki mesajlar tek turn grubunda birleşir.
+    // (LazyColumn içindeyken scroll mantığı erişemiyordu — boyutlar yukarı taşındı.)
+    val feed = remember(messages) {
+        val out = mutableListOf<FeedItem>()
+        var curRole: String? = null
+        var curList = mutableListOf<ChatMsg>()
+        var curEnd = -1
+        fun flush() {
+            if (curRole != null && curList.isNotEmpty()) {
+                out += FeedItem.Group(curRole!!, curList.toList(), curEnd)
+                curList = mutableListOf()
+            }
+            curRole = null
+        }
+        messages.forEachIndexed { mi, m ->
+            if (m.role == "user" || m.role == "assistant") {
+                if (curRole == m.role) {
+                    curList += m; curEnd = mi
+                } else {
+                    flush(); curRole = m.role; curList = mutableListOf(m); curEnd = mi
+                }
+            } else if (m.role == "bashExecution") {
+                flush(); out += FeedItem.Bash(m, mi)
+            }
+        }
+        flush()
+        out
+    }
+
+    var feedSizeRef by remember { mutableStateOf(0) }
+    var noticeCountRef by remember { mutableStateOf(0) }
+    var liveEmptyRef by remember { mutableStateOf(true) }
+    SideEffect {
+        feedSizeRef = feed.size
+        noticeCountRef = notices.size
+        liveEmptyRef = live.isEmpty()
+    }
+
     var inputVal by remember { mutableStateOf(TextFieldValue("")) }
     var pendingFiles by remember { mutableStateOf(JSONArray()) }
     var modelSheet by remember { mutableStateOf(false) }
@@ -144,31 +182,50 @@ fun ChatScreen(
     }
 
     var autoScrollEnabled by remember { mutableStateOf(true) }
-
-    // KÖK SEBEP (ortaya/başına fokuslanma): scroll komutu composition commit'inden hemen sonra
-    // koşuyor ama LazyColumn layout'u henüz yeni item'ları ölçmemiş oluyor — layoutInfo.totalItemsCount
-    // eski değeri veriyor ve yanlış index'e gidiliyor. Çözüm: layout hedef sayıya ulaşana kadar bekle.
-    // feed aşağıda tanımlı (forward-ref yasağı) — boyutlar SideEffect ile ref'lere taşınır.
     var feedSizeRef by remember { mutableStateOf(0) }
     var noticeCountRef by remember { mutableStateOf(0) }
     var liveEmptyRef by remember { mutableStateOf(true) }
+    SideEffect {
+        feedSizeRef = feed.size
+        noticeCountRef = notices.size
+        liveEmptyRef = live.isEmpty()
+    }
+
+    private inline fun snapBottom() {
+        val total = listState.layoutInfo.totalItemsCount
+        if (total > 0) {
+            try {
+                // AT_BOTTOM: son item viewport yüksekliğinden uzunsa DİBİNE hizalar —
+                // varsayılan AT_TOP son mesajın ortasına odaklıyordu (kök sorun).
+                listState.scrollToItem(total - 1, androidx.compose.foundation.lazy.ScrollToItemAlignment.AT_BOTTOM)
+            } catch (_: Exception) { }
+        }
+    }
 
     fun scrollToBottom(animate: Boolean = false) {
         autoScrollEnabled = true
         scope.launch {
             val expected = feedSizeRef + noticeCountRef + (if (!liveEmptyRef) 1 else 0)
             if (expected > 0) {
+                // Layout henüz yeni item'ları saymamışken scroll yapmak yanlış indekse
+                // götürüyor — hedef sayıya ulaşana kadar bekle.
                 withTimeoutOrNull(2000) {
                     snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it >= expected }
                 }
             }
-            val snaps = if (animate) 3 else 1
-            repeat(snaps) { i ->
-                if (i == 1) delay(120)
-                if (i == 2) delay(250)
-                val total = listState.layoutInfo.totalItemsCount
-                if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
+            snapBottom()
+            if (animate) {
+                delay(120); snapBottom()
+                delay(250); snapBottom()
             }
+        }
+    }
+
+    // Session değiştiyse kullanıcı en sona gelmek ister — otomatik takibi zorla devreye al.
+    LaunchedEffect(sessionState.sessionFile) {
+        if (sessionState.sessionFile != null) {
+            autoScrollEnabled = true
+            scrollToBottom(animate = true)
         }
     }
 
@@ -793,38 +850,7 @@ fun ChatScreen(
                     }
                 } else {
                     // pi SDK thinking/toolCall/text'i ayrı mesajlara böler; ardışık aynı rol
-                    // tek numaralı blokta gruplanır (her parça ayrı mesaj gibi durmaz).
-                    val feed = remember(messages) {
-                        val out = mutableListOf<FeedItem>()
-                        var curRole: String? = null
-                        var curList = mutableListOf<ChatMsg>()
-                        var curEnd = -1
-                        fun flush() {
-                            if (curRole != null && curList.isNotEmpty()) {
-                                out += FeedItem.Group(curRole!!, curList.toList(), curEnd)
-                                curList = mutableListOf()
-                            }
-                            curRole = null
-                        }
-                        messages.forEachIndexed { mi, m ->
-                            if (m.role == "user" || m.role == "assistant") {
-                                if (curRole == m.role) {
-                                    curList += m; curEnd = mi
-                                } else {
-                                    flush(); curRole = m.role; curList = mutableListOf(m); curEnd = mi
-                                }
-                            } else if (m.role == "bashExecution") {
-                                flush(); out += FeedItem.Bash(m, mi)
-                            }
-                        }
-                        flush()
-                        out
-                    }
-                    SideEffect {
-                        feedSizeRef = feed.size
-                        noticeCountRef = notices.size
-                        liveEmptyRef = live.isEmpty()
-                    }
+                    // tek numaralı blokta gruplanır (feed: yukarıda build edilir, scroll da kullanır).
                     var num = 0
                     var noticeIdx = 0
                     val sortedNotices = notices
