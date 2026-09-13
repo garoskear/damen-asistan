@@ -36,7 +36,9 @@ class PowerService : AccessibilityService() {
             return try { s.performGlobalAction(GLOBAL_ACTION_POWER_DIALOG) } catch (_: Exception) { false }
         }
 
-        /** Android 11+ (API 30+) arka planda sessiz, doğrudan ekran görüntüsü alma */
+        /** Android 11+ (API 30+) arka planda sessiz, doğrudan ekran görüntüsü alma.
+         *  Ağır iş (wrap/copy/compress) arka plan thread'inde; dosya atomik rename ile yayınlanır
+         *  (yarım yazılmış PNG'yi okuyan yarış durumu olmasın). */
         fun captureScreen(onComplete: (String?) -> Unit) {
             val s = ref.get()
             if (s == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
@@ -49,34 +51,42 @@ class PowerService : AccessibilityService() {
                     s.mainExecutor,
                     object : TakeScreenshotCallback {
                         override fun onSuccess(result: ScreenshotResult) {
-                            try {
-                                val hwBuffer = result.hardwareBuffer
-                                val colorSpace = result.colorSpace
-                                val bmp = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
-                                val software = bmp?.copy(Bitmap.Config.ARGB_8888, false)
-                                hwBuffer.close()
-                                bmp?.recycle()
-                                if (software != null) {
-                                    val f = File(s.cacheDir, "auto_shot.png")
-                                    FileOutputStream(f).use { fos ->
-                                        software.compress(Bitmap.CompressFormat.PNG, 95, fos)
+                            Thread({
+                                try {
+                                    val hwBuffer = result.hardwareBuffer
+                                    if (hwBuffer == null) { onComplete(null); return@Thread }
+                                    val bmp = Bitmap.wrapHardwareBuffer(hwBuffer, result.colorSpace)
+                                    val software = bmp?.copy(Bitmap.Config.ARGB_8888, false)
+                                    try { hwBuffer.close() } catch (_: Exception) { }
+                                    try { bmp?.recycle() } catch (_: Exception) { }
+                                    if (software != null) {
+                                        val tmp = File(s.cacheDir, "auto_shot.tmp")
+                                        val out = File(s.cacheDir, "auto_shot.png")
+                                        FileOutputStream(tmp).use { fos ->
+                                            software.compress(Bitmap.CompressFormat.PNG, 95, fos)
+                                        }
+                                        software.recycle()
+                                        try { out.delete() } catch (_: Exception) { }
+                                        if (tmp.renameTo(out)) onComplete(out.absolutePath)
+                                        else onComplete(null)
+                                    } else {
+                                        onComplete(null)
                                     }
-                                    software.recycle()
-                                    onComplete(f.absolutePath)
-                                } else {
+                                } catch (e: Exception) {
+                                    android.util.Log.w("DAMEN", "capture fail: ${e.message}")
                                     onComplete(null)
                                 }
-                            } catch (_: Exception) {
-                                onComplete(null)
-                            }
+                            }, "damen-shot").start()
                         }
 
                         override fun onFailure(errorCode: Int) {
+                            android.util.Log.w("DAMEN", "capture onFailure: $errorCode")
                             onComplete(null)
                         }
                     }
                 )
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                android.util.Log.w("DAMEN", "takeScreenshot fail: ${e.message}")
                 onComplete(null)
             }
         }

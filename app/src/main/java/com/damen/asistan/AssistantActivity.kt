@@ -271,8 +271,10 @@ private fun AssistantScreen(
     // Ekran görüntüsü ekleme: 4K ekran PNG'si ~5-10MB — okuma/base64 IO'da yapılır,
     // ana thread'de büyük bellek işlemi çökme/ANR yaratmaz.
     fun attachAutoScreenshot() {
-        val shotPath = autoShotFile ?: File(ctx.cacheDir, "auto_shot.png").takeIf { it.exists() }?.absolutePath
-        if (shotPath == null) { showToast("ekran görüntüsü bulunamadı"); return }
+        val f = autoShotFile?.let { File(it) } ?: File(ctx.cacheDir, "auto_shot.png")
+        if (!f.exists() || f.length() <= 0L) { showToast("ekran görüntüsü bulunamadı"); return }
+        if (f.length() > 20 * 1024 * 1024) { showToast("ekran görüntüsü çok büyük"); return }
+        val shotPath = f.absolutePath
         scope.launch {
             try {
                 val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -291,6 +293,7 @@ private fun AssistantScreen(
                     showToast("ekran görüntüsü boş veya çok büyük")
                 }
             } catch (e: Exception) {
+                android.util.Log.w("DAMEN", "attach fail: ${e.message}")
                 showToast("eklenemedi: ${e.message ?: "hata"}")
             }
         }

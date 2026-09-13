@@ -54,7 +54,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -143,18 +145,29 @@ fun ChatScreen(
 
     var autoScrollEnabled by remember { mutableStateOf(true) }
 
+    // KÖK SEBEP (ortaya/başına fokuslanma): scroll komutu composition commit'inden hemen sonra
+    // koşuyor ama LazyColumn layout'u henüz yeni item'ları ölçmemiş oluyor — layoutInfo.totalItemsCount
+    // eski değeri veriyor ve yanlış index'e gidiliyor. Çözüm: layout hedef sayıya ulaşana kadar bekle.
+    // feed aşağıda tanımlı (forward-ref yasağı) — boyutlar SideEffect ile ref'lere taşınır.
+    var feedSizeRef by remember { mutableStateOf(0) }
+    var noticeCountRef by remember { mutableStateOf(0) }
+    var liveEmptyRef by remember { mutableStateOf(true) }
+
     fun scrollToBottom(animate: Boolean = false) {
         autoScrollEnabled = true
         scope.launch {
-            // Uzun tek item'larda animateScrollToItem hedefe varamadan bırakabilir — anında git.
-            val snap: suspend () -> Unit = {
+            val expected = feedSizeRef + noticeCountRef + (if (!liveEmptyRef) 1 else 0)
+            if (expected > 0) {
+                withTimeoutOrNull(2000) {
+                    snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it >= expected }
+                }
+            }
+            val snaps = if (animate) 3 else 1
+            repeat(snaps) { i ->
+                if (i == 1) delay(120)
+                if (i == 2) delay(250)
                 val total = listState.layoutInfo.totalItemsCount
                 if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
-            }
-            snap()
-            if (animate) {
-                delay(120); snap()   // içerik/layout oturunca zincirle
-                delay(250); snap()
             }
         }
     }
@@ -182,18 +195,12 @@ fun ChatScreen(
 
     // Mesaj listesi değişince (settled/switched/iyimser) otomatik takip — size değil referans:
     LaunchedEffect(messages, notices.size) {
-        if (autoScrollEnabled) {
-            val total = listState.layoutInfo.totalItemsCount
-            if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
-        }
+        if (autoScrollEnabled) scrollToBottom(animate = false)
     }
 
-    // Canlı akış: her flush'ta (120ms) dipte kal
+    // Canlı akış: her flush'ta (120ms) dipte kal — item büyürken zincirli snap
     LaunchedEffect(live) {
-        if (live.isNotEmpty() && autoScrollEnabled) {
-            val total = listState.layoutInfo.totalItemsCount
-            if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
-        }
+        if (live.isNotEmpty() && autoScrollEnabled) scrollToBottom(animate = true)
     }
 
     // Klavye açılınca içerik alanı küçülür — en alta yasla
@@ -812,6 +819,11 @@ fun ChatScreen(
                         }
                         flush()
                         out
+                    }
+                    SideEffect {
+                        feedSizeRef = feed.size
+                        noticeCountRef = notices.size
+                        liveEmptyRef = live.isEmpty()
                     }
                     var num = 0
                     var noticeIdx = 0

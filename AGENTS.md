@@ -40,6 +40,7 @@ MainActivity (Compose, Nothing tema)
 
 ## Derleme / CI
 - Lokal derleme bu cihazda yapılmaz (Android SDK yok) — CI derler: her push debug APK artifact (`APK` workflow, Gradle 8.5 elle indirilir çünkü runner 9.x AGP 8.2'yi patlatır, `fetch-depth: 0`).
+- Gateway (backend) tarafında bir değişiklik yapılırsa kullanıcıya BİLDİR — restart/reload'u kullanıcı yapar (kural: `Beyin/Kurallar.md`).
 - `v*` tag → imzalı release (`release.yml`, `permissions: contents: write` şart).
 - İmza `app/damen-debug.keystore` (debug+release aynı, üstüne kurulum çalışır). `versionCode = commit sayısı`.
 
