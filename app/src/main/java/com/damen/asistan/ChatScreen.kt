@@ -774,17 +774,19 @@ fun ChatScreen(
 
                     LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
                         feed.forEachIndexed { gi, g ->
-                            when (g) {
+                            val end = when (g) {
                                 is FeedItem.Group -> {
                                     num++
                                     val n = num
                                     item(key = "g$gi") { Turn(n, g.role, g.msgs) }
+                                    g.endIdx
                                 }
                                 is FeedItem.Bash -> {
                                     item(key = "g$gi") { BashTurn(num + 1, g.msg) }
+                                    g.endIdx
                                 }
                             }
-                            while (noticeIdx < sortedNotices.size && sortedNotices[noticeIdx].at <= g.endIdx + 1) {
+                            while (noticeIdx < sortedNotices.size && sortedNotices[noticeIdx].at <= end + 1) {
                                 val nt = sortedNotices[noticeIdx]
                                 item(key = "n$noticeIdx") { NoticeRow(nt) }
                                 noticeIdx++
