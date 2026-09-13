@@ -3,9 +3,9 @@
 **Tarih:** 13 Eylül 2026  
 **Paket:** `com.damen.asistan`  
 **GitHub:** `garoskear/damen-asistan`  
-**Branch:** `main` (commit `2cfd36d`)  
+**Branch:** `main` (HEAD `2a9018b` — son kod commit'i `2cfd36d`)  
 **APK Konumu:** `/sdcard/Download/DamenAsistan.apk` (50 MB)  
-**CI Derlemesi:** GitHub Actions `APK` workflow run #34771044096 (Yeşil / Başarılı — 1m 32s)
+**CI Derlemesi:** GitHub Actions `APK` workflow run #34771243022 (HEAD, yeşil — 1m 26s) + #34771044096 (son kod commit'i, yeşil — 1m 35s)
 
 ---
 
@@ -87,7 +87,7 @@
 Derleme kullanıcının talimatı doğrultusunda **GitHub Actions** CI ortamında koşuldu:
 - **Repository:** `garoskear/damen-asistan`
 - **Workflow:** `APK` (main branch push)
-- **Run ID:** `34767927130`
+- **Run ID:** `34771044096` (son kod commit'i `2cfd36d`; HEAD `2a9018b` yalnızca doküman farkı — run `34771243022` da yeşil)
 - **İşlem Aşamaları:**
   1. `actions/checkout@v4` (fetch-depth: 0) — Başarılı
   2. `actions/setup-java@v4` (Java 17 Temurin) — Başarılı
@@ -95,7 +95,7 @@ Derleme kullanıcının talimatı doğrultusunda **GitHub Actions** CI ortamınd
   4. `Install Gradle 8.5` — Başarılı
   5. `/tmp/gradle-8.5/bin/gradle assembleDebug` — **BUILD SUCCESSFUL in 1m 22s**
   6. `upload-artifact@v4` (`damen-asistan-apk`) — Başarılı
-- **Artifact İndirme:** Artifact `gh run download 34767927130` ile çekildi ve `/sdcard/Download/DamenAsistan.apk` yoluna kopyalandı.
+- **Artifact İndirme:** Artifact `gh run download 34771044096` ile çekildi ve `/sdcard/Download/DamenAsistan.apk` yoluna kopyalandı.
 
 ---
 
@@ -109,5 +109,6 @@ Derleme kullanıcının talimatı doğrultusunda **GitHub Actions** CI ortamınd
 
 ## 5. Kapsam Dışı Bırakılanlar (ve Nedenleri)
 
-- **Mikrofon / Ses Kaydı:** Kullanıcı yönergelerinde "v1'de mikrofon YOK (sonra eklenecek)" kuralı gereğince bilinçli olarak eklenmedi.
+- **Mikrofon / Ses Kaydı:** v1 kuralında "mikrofon yok" denmişti; kullanıcı 2026-09-13'te mikrofonu istedi ve v2.2'de eklendi (yukarıda). Kaydırma tuşu yerine `SpeechRecognizer` tabanlı 🎙 kullanılıyor.
+- **Sesli uyarı / TTS, zengin transkript kartlarının ötesindeki özellikler (tool diff düzenleme, pencere başına thinking geçişi):** istenmedi / web'de de yok — kapsam dışı bırakıldı.
 - **Harici Ayar Ekranı:** Host/port kurallar gereği kod içinde `ws://127.0.0.1:8787` olarak sabitlendi; token ve kısayollar `/sdcard/DamenAsistan/config.json` dosyasından okunur.
