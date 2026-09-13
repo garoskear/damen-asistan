@@ -3,9 +3,9 @@
 **Tarih:** 13 Eylül 2026  
 **Paket:** `com.damen.asistan`  
 **GitHub:** `garoskear/damen-asistan`  
-**Branch:** `main` (commit `f566980`)  
+**Branch:** `main` (commit `2cfd36d`)  
 **APK Konumu:** `/sdcard/Download/DamenAsistan.apk` (50 MB)  
-**CI Derlemesi:** GitHub Actions `APK` workflow run #34768730737 (Yeşil / Başarılı — 1m 41s)
+**CI Derlemesi:** GitHub Actions `APK` workflow run #34771044096 (Yeşil / Başarılı — 1m 32s)
 
 ---
 
@@ -99,7 +99,15 @@ Derleme kullanıcının talimatı doğrultusunda **GitHub Actions** CI ortamınd
 
 ---
 
-## 4. Kapsam Dışı Bırakılanlar (ve Nedenleri)
+## 4. v2.2 Ekleri (2026-09-13 akşam)
+
+- **Otomatik ekran görüntüsü:** Asistan açılışında arayüz gelmeden `PowerService.captureScreen` sessiz kare yakalar (`auto_shot.png`); `⛶` tuşu veya `+` menüsüyle tek dokunuşla eklenir, gönderim/kapanışta tmp silinir. Servis kapalıysa MediaProjection + kırpma yedeği çalışır. Dosyalar: `PowerService.kt`, `AssistantActivity.kt`, `accessibility_service_config.xml` (`canTakeScreenshot`).
+- **Mikrofon:** Asistan + ana sohbette `SpeechRecognizer` 🎙 tuşu (`RECORD_AUDIO` izni, `AndroidManifest.xml`); dinlerken nabız animasyonu, sonuç alana eklenir, gönderimde durur.
+- **Akıcı geçiş:** WS `onCreate`'te önceden bağlanır; gönderimde hızlı session doğrula + prompt + `SINGLE_TOP|CLEAR_TOP` fade geçiş (eski 15sn beklemeli akış silindi).
+- **Turn gruplama:** Ardışık aynı roldeki SDK mesajları tek numaralı blokta birleşir (`FeedItem.Group`, `Turn(num, role, msgs)`); tool/thinking/text parçaları ayrı mesaj gibi durmaz. Bildirim çapaları grup bitişine göre dizilir. Dosya: `ChatScreen.kt`.
+- **Derleme notu:** İlk v2.2 push'unda `FeedItem` smart-cast (`g.endIdx`) derleme hatası verdi; bitiş indeksi `when` dallarında `val end` ile yakalanarak düzeltildi (commit `2cfd36d`, run #34771044096 yeşil).
+
+## 5. Kapsam Dışı Bırakılanlar (ve Nedenleri)
 
 - **Mikrofon / Ses Kaydı:** Kullanıcı yönergelerinde "v1'de mikrofon YOK (sonra eklenecek)" kuralı gereğince bilinçli olarak eklenmedi.
 - **Harici Ayar Ekranı:** Host/port kurallar gereği kod içinde `ws://127.0.0.1:8787` olarak sabitlendi; token ve kısayollar `/sdcard/DamenAsistan/config.json` dosyasından okunur.

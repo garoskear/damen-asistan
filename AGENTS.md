@@ -49,6 +49,12 @@ MainActivity (Compose, Nothing tema)
 - Compose `@Composable` import'ları + `collectAsState` için `lifecycle-runtime-compose` gerekir.
 - AGP 8.2 signing: `getByName("debug")` düzenlenir, `create` çakışır.
 
+## v2.2 Asistan yükseltmesi (2026-09-13)
+- **Otomatik ekran görüntüsü:** Asistan her açıldığında `PowerService.captureScreen` (erişilebilirlik `takeScreenshot`, API 30+) arayüz gelmeden sessizce kare yakalar → `cacheDir/auto_shot.png`. Kullanıcı `⛶` tuşu veya `+` menüsündeki "Ekran Görüntüsü Ekle" ile tek dokunuşla eke ekler; gönderimde/sonlandırmada tmp dosyası silinir. Erişilebilirlik kapalıysa eski MediaProjection + CropActivity akışı yedekte durur.
+- **Mikrofon:** Asistan + ana sohbet kompozitörüne `SpeechRecognizer` tabanlı 🎙 tuşu (RECORD_AUDIO izni, kısmi sonuç, dinlerken nabız animasyonu); tanınan metin alana eklenir, gönderimde dinleme durur.
+- **Akıcı asistan→uygulama geçişi:** WS bağlantısı `onCreate`'te önceden kurulur; gönderimde 2sn hızlı bekleme + prompt fırlatılıp `FLAG_ACTIVITY_SINGLE_TOP|CLEAR_TOP` + fade geçişiyle ana sohbete anında geçilir (önceki 15sn+ beklemeli akış kaldırıldı).
+- **Turn gruplama:** pi SDK thinking/toolCall/text'i ayrı mesajlara böldüğü için her parça ayrı numaralı mesaj gibi duruyordu. Ardışık aynı roldeki mesajlar artık `FeedItem.Group` ile tek numaralı PI/SEN bloğunda birleşir (`ChatScreen`); bildirim çapaları grup bitiş indeksine göre dizilir.
+
 ## v2.1 Rebuild (2026-09-13, stabilizasyon ve parite)
 - **Info Strip (Bug 1):** `statuses`, `widgets`, `stats` şeridi sabit üst sınırlı boyutta (`heightIn(max = 68.dp)`), dikey ve yatay kaydırma durumları ekran seviyesinde sabitlendi; titreme ve sağa kayma önlendi.
 - **Session Adları "null" (Bug 2):** Android `JSONObject.optString`'in literal `"null"` dönmesi `safeNull` ve `cleanSessionTitle` ile tamamen engellendi; oturum adı yoksa dosya adı veya güvenli fallback gelir.
