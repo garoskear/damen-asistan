@@ -160,15 +160,15 @@ private fun AssistantScreen(
     var toast by remember { mutableStateOf<String?>(null) }
     var shotJob by remember { mutableStateOf<Job?>(null) }
 
-    // Eğer initialAutoShot başlangıçta henüz null idiyse, 500ms içinde kontrol et
+    // Açılışta otomatik çekilen kareyi bekle (captureScreen async — en fazla 1.5 sn)
     LaunchedEffect(Unit) {
         if (autoShotFile == null) {
-            repeat(10) {
+            repeat(15) {
                 delay(100)
                 val f = File(ctx.cacheDir, "auto_shot.png")
                 if (f.exists() && f.length() > 0) {
                     autoShotFile = f.absolutePath
-                    return@repeat
+                    return@LaunchedEffect
                 }
             }
         }
@@ -193,7 +193,7 @@ private fun AssistantScreen(
 
     fun startListening() {
         if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
-            showToast("ses tanıma servisi bulunamadı")
+            showToast("ses tanıma servisi bu cihazda yok (microG ortamında Google ses servisi gerekir)")
             return
         }
         stopListening()
@@ -205,7 +205,19 @@ private fun AssistantScreen(
             override fun onRmsChanged(rmsdB: Float) { }
             override fun onBufferReceived(buffer: ByteArray?) { }
             override fun onEndOfSpeech() { isListening = false }
-            override fun onError(error: Int) { isListening = false }
+            override fun onError(error: Int) {
+                isListening = false
+                val msg = when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH -> null // sessizlik — kullanıcı konuşmadı, uyarıya gerek yok
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "mikrofon izni verilmedi"
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "ses servisi meşgul, tekrar dene"
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "ses algılanamadı"
+                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT, SpeechRecognizer.ERROR_NETWORK -> "ses servisi ağa ulaşamadı"
+                    SpeechRecognizer.ERROR_CLIENT -> "ses servisi yanıt vermiyor (cihazda ses tanıma yok olabilir)"
+                    else -> "mikrofon hatası ($error)"
+                }
+                if (msg != null) showToast(msg)
+            }
             override fun onResults(results: Bundle?) {
                 isListening = false
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
@@ -215,10 +227,12 @@ private fun AssistantScreen(
                 }
             }
             override fun onPartialResults(partialResults: Bundle?) {
+                // Anlık kısmi sonucu alana düşür — geri bildirim hissi
                 val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val spoken = matches?.firstOrNull() ?: ""
-                if (spoken.isNotBlank()) {
-                    // Anlık konuşmayı göster
+                if (spoken.isNotBlank() && isListening) {
+                    // partial'ı sadece placeholder'a yansıtmak yerine sessizce bekliyoruz —
+                    // bazı cihazlarda partial final'i yineliyor, çift metin oluşmasın.
                 }
             }
             override fun onEvent(eventType: Int, params: Bundle?) { }
@@ -254,26 +268,32 @@ private fun AssistantScreen(
         }
     }
 
-    // Ekran görüntüsü ekleme fonksiyonu
+    // Ekran görüntüsü ekleme: 4K ekran PNG'si ~5-10MB — okuma/base64 IO'da yapılır,
+    // ana thread'de büyük bellek işlemi çökme/ANR yaratmaz.
     fun attachAutoScreenshot() {
         val shotPath = autoShotFile ?: File(ctx.cacheDir, "auto_shot.png").takeIf { it.exists() }?.absolutePath
-        if (shotPath != null) {
+        if (shotPath == null) { showToast("ekran görüntüsü bulunamadı"); return }
+        scope.launch {
             try {
-                val bytes = File(shotPath).readBytes()
+                val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    File(shotPath).readBytes()
+                }
                 if (bytes.isNotEmpty() && bytes.size <= 20 * 1024 * 1024) {
+                    val b64 = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                        android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    }
                     val merged = JSONArray()
                     for (i in 0 until pendingFiles.length()) merged.put(pendingFiles.get(i))
-                    merged.put(
-                        JSONObject().put("name", "ekran.png").put("mime", "image/png")
-                            .put("data", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)),
-                    )
+                    merged.put(JSONObject().put("name", "ekran.png").put("mime", "image/png").put("data", b64))
                     pendingFiles = merged
                     showToast("+ ekran görüntüsü eklendi")
-                    return
+                } else {
+                    showToast("ekran görüntüsü boş veya çok büyük")
                 }
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                showToast("eklenemedi: ${e.message ?: "hata"}")
+            }
         }
-        showToast("ekran görüntüsü bulunamadı")
     }
 
     val cropLauncher = rememberLauncherForActivityResult(

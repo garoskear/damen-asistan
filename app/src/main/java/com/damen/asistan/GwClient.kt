@@ -256,6 +256,36 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
     private val toolResults = mutableMapOf<String, String>()
     private var toastSeq = 0L
 
+    // Status/widget "grace period": bg görevleri status'u set edip saniyeler içinde siliyor —
+    // bu gidip gelen yazı şeridin titremesine yol açıyordu. Boş güncelleme 4 sn bekletilir:
+    // süre içinde yeni dolu değer gelirse panel asla yok olmaz.
+    private var statusClearJob: kotlinx.coroutines.Job? = null
+    private var widgetClearJob: kotlinx.coroutines.Job? = null
+    private fun setStableStatuses(list: List<String>) {
+        if (list.isNotEmpty()) {
+            statusClearJob?.cancel(); statusClearJob = null
+            _statuses.value = list
+        } else if (statusClearJob == null) {
+            statusClearJob = scope.launch {
+                kotlinx.coroutines.delay(4000)
+                _statuses.value = emptyList()
+                statusClearJob = null
+            }
+        }
+    }
+    private fun setStableWidgets(list: List<String>) {
+        if (list.isNotEmpty()) {
+            widgetClearJob?.cancel(); widgetClearJob = null
+            _widgets.value = list
+        } else if (widgetClearJob == null) {
+            widgetClearJob = scope.launch {
+                kotlinx.coroutines.delay(4000)
+                _widgets.value = emptyList()
+                widgetClearJob = null
+            }
+        }
+    }
+
     // Canlı akış: deltada StateFlow'a yazılmaz; çalışma listesi 120ms'de bir flush'lanır.
     private val liveWorking = mutableListOf<LiveSeg>()
     private var liveDirty = false
@@ -532,14 +562,14 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
                 _queueFollow.value = o.optJSONArray("followUp")?.length() ?: 0
             }
             "statuses" -> {
-                _statuses.value = o.optJSONArray("statuses")?.let { a -> List(a.length()) { a.optJSONObject(it)?.optString("text", "") ?: "" } } ?: emptyList()
+                setStableStatuses(o.optJSONArray("statuses")?.let { a -> List(a.length()) { a.optJSONObject(it)?.optString("text", "") ?: "" } } ?: emptyList())
             }
             "widgets" -> {
-                _widgets.value = o.optJSONArray("widgets")?.let { a ->
+                setStableWidgets(o.optJSONArray("widgets")?.let { a ->
                     List(a.length()) { i ->
                         a.optJSONObject(i)?.optJSONArray("lines")?.let { l -> List(l.length()) { l.optString(it) } }?.joinToString("\n") ?: ""
                     }
-                } ?: emptyList()
+                } ?: emptyList())
             }
             "fatal" -> toast(o.optString("text", "hata"), "error")
             "ping" -> { }

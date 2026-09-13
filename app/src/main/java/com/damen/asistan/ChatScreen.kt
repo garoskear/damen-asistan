@@ -128,7 +128,7 @@ fun ChatScreen(
     val inputInteraction = remember { MutableInteractionSource() }
     val clipboard = remember { ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
 
-    // Dibe yakınlık tespiti
+    // Dibe yakınlık tespiti: son item görünüyor DEĞİL, son item'ın altı da viewport içinde olmalı.
     val isAtBottom by remember {
         derivedStateOf {
             val info = listState.layoutInfo
@@ -136,7 +136,7 @@ fun ChatScreen(
             if (total == 0) true
             else {
                 val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
-                last.index >= total - 1
+                last.index >= total - 1 && (last.offset + last.size) <= info.viewportEndOffset + 60
             }
         }
     }
@@ -146,11 +146,28 @@ fun ChatScreen(
     fun scrollToBottom(animate: Boolean = false) {
         autoScrollEnabled = true
         scope.launch {
-            val total = listState.layoutInfo.totalItemsCount
-            if (total > 0) {
-                if (animate) listState.animateScrollToItem(total - 1)
-                else listState.scrollToItem(total - 1)
+            // Uzun tek item'larda animateScrollToItem hedefe varamadan bırakabilir — anında git.
+            val snap: suspend () -> Unit = {
+                val total = listState.layoutInfo.totalItemsCount
+                if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
             }
+            snap()
+            if (animate) {
+                delay(120); snap()   // içerik/layout oturunca zincirle
+                delay(250); snap()
+            }
+        }
+    }
+
+    // Kullanıcı yukarı kaydırdıysa otomatik takibi bırak; dibe dönünce yeniden başlat.
+    var lastFirstIdx by remember { mutableStateOf(0) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex }.collect { idx ->
+            when {
+                idx < lastFirstIdx -> autoScrollEnabled = false
+                isAtBottom -> autoScrollEnabled = true
+            }
+            lastFirstIdx = idx
         }
     }
 
@@ -163,14 +180,27 @@ fun ChatScreen(
         }
     }
 
-    // Mesaj veya live geldiğinde otomatik takip
-    LaunchedEffect(messages.size, live.size, notices.size) {
+    // Mesaj listesi değişince (settled/switched/iyimser) otomatik takip — size değil referans:
+    LaunchedEffect(messages, notices.size) {
         if (autoScrollEnabled) {
             val total = listState.layoutInfo.totalItemsCount
-            if (total > 0) {
-                try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
-            }
+            if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
         }
+    }
+
+    // Canlı akış: her flush'ta (120ms) dipte kal
+    LaunchedEffect(live) {
+        if (live.isNotEmpty() && autoScrollEnabled) {
+            val total = listState.layoutInfo.totalItemsCount
+            if (total > 0) try { listState.scrollToItem(total - 1) } catch (_: Exception) { }
+        }
+    }
+
+    // Klavye açılınca içerik alanı küçülür — en alta yasla
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val imeBottom = WindowInsets.ime.getBottom(density)
+    LaunchedEffect(imeBottom) {
+        if (imeBottom > 0) scrollToBottom(animate = false)
     }
 
     val history = remember {
@@ -235,7 +265,7 @@ fun ChatScreen(
 
     fun startListening() {
         if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
-            client.toast("ses tanıma servisi bulunamadı", "warning")
+            client.toast("ses tanıma servisi bu cihazda yok (microG ortamında Google ses servisi gerekir)", "warning")
             return
         }
         stopListening()
@@ -247,7 +277,19 @@ fun ChatScreen(
             override fun onRmsChanged(rmsdB: Float) { }
             override fun onBufferReceived(buffer: ByteArray?) { }
             override fun onEndOfSpeech() { isListening = false }
-            override fun onError(error: Int) { isListening = false }
+            override fun onError(error: Int) {
+                isListening = false
+                val msg = when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH -> null // sessizlik — uyarıya gerek yok
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "mikrofon izni verilmedi"
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "ses servisi meşgul, tekrar dene"
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "ses algılanamadı"
+                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT, SpeechRecognizer.ERROR_NETWORK -> "ses servisi ağa ulaşamadı"
+                    SpeechRecognizer.ERROR_CLIENT -> "ses servisi yanıt vermiyor (cihazda ses tanıma yok olabilir)"
+                    else -> "mikrofon hatası ($error)"
+                }
+                if (msg != null) client.toast(msg, "warning")
+            }
             override fun onResults(results: Bundle?) {
                 isListening = false
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
@@ -428,6 +470,7 @@ fun ChatScreen(
     // Durum şeridi kararlılığı: model yüklendiğinde kalıcı olarak açık kalır
     val hasStats = stats != null && (stats?.totalTokens != null || stats?.cost != null || stats?.contextPercent != null)
     val stripVisible = statuses.isNotEmpty() || widgets.isNotEmpty() || hasStats || sessionState.modelId != null
+    val stripVScroll = rememberScrollState()
     val stripHScroll = rememberScrollState()
     val statsHScroll = rememberScrollState()
 
@@ -533,10 +576,12 @@ fun ChatScreen(
                         Divider(color = Damen.LineDim, thickness = 1.dp)
                     }
 
-                    // DURUM & İSTATİSTİK ŞERİDİ (Flicker engellendi: model varsa kalıcıdır)
+                    // DURUM & İSTATİSTİK ŞERİDİ — SABİT BOY (max 68dp) + dikey/yatay kaydırılabilir
                     if (stripVisible) {
                         Column(
                             modifier = Modifier.fillMaxWidth()
+                                .heightIn(max = 68.dp)
+                                .verticalScroll(stripVScroll)
                                 .padding(horizontal = 12.dp, vertical = 4.dp),
                         ) {
                             if (statuses.isNotEmpty() || widgets.isNotEmpty()) {
@@ -950,13 +995,17 @@ private fun BashTurn(num: Int, m: ChatMsg) {
 
 @Composable
 private fun ThinkingBlock(text: String, expanded: Boolean, onToggle: () -> Unit) {
+    // Thinking metnindeki gereksiz boş satırlar temizlenir (cümleler arası alt-alta boşluk olmasın)
+    val cleaned = remember(text) {
+        text.replace("\r", "").split("\n").filter { it.isNotBlank() }.joinToString("\n")
+    }
     Column(modifier = Modifier.clickable(
         interactionSource = remember { MutableInteractionSource() },
         indication = null,
     ) { onToggle() }) {
         Text("···", fontFamily = Damen.Mono, fontSize = 12.sp, letterSpacing = 2.8.sp, color = Damen.Faint)
         Text(
-            text, fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Dim,
+            cleaned, fontFamily = Damen.Mono, fontSize = 12.sp, color = Damen.Dim,
             maxLines = if (expanded) Int.MAX_VALUE else 5,
             modifier = Modifier.padding(start = 10.dp).startBorder(1.dp, color = Damen.Line).padding(start = 0.dp),
         )
