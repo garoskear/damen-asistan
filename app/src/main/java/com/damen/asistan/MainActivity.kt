@@ -55,7 +55,13 @@ class MainActivity : ComponentActivity() {
                             )
                             Spacer(Modifier.height(12.dp))
                             Button(
-                                onClick = { if (token.isNotBlank()) showToken = false },
+                                onClick = {
+                                    if (token.isNotBlank()) {
+                                        AsistanConfig.saveToken(this@MainActivity, token.trim())
+                                        token = token.trim()
+                                        showToken = false
+                                    }
+                                },
                                 enabled = token.isNotBlank(),
                             ) { Text("Bağlan") }
                         }

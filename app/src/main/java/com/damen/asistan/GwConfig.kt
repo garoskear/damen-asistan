@@ -42,10 +42,13 @@ data class AsistanConfig(
         private const val FILE = "config.json"
 
         fun load(ctx: Context): AsistanConfig {
-            // 1) harici (düzenlenebilir)
+            // 1) harici (düzenlenebilir) — yer tutucuysa yok say, app içine düş
             try {
                 val ext = File(Environment.getExternalStorageDirectory(), "$EXT_DIR/$FILE")
-                if (ext.exists()) return parse(ext.readText())
+                if (ext.exists()) {
+                    val parsed = parse(ext.readText())
+                    if (parsed.token.isNotBlank() && parsed.token != "BURAYA_TOKEN") return parsed
+                }
             } catch (_: Exception) { }
             // 2) app içi
             try {
@@ -53,6 +56,21 @@ data class AsistanConfig(
                 if (inner.exists()) return parse(inner.readText())
             } catch (_: Exception) { }
             return AsistanConfig()
+        }
+
+        fun saveToken(ctx: Context, token: String) {
+            try {
+                val cur = try { load(ctx) } catch (_: Exception) { AsistanConfig() }
+                val o = JSONObject()
+                    .put("token", token)
+                    .put("shortcuts", JSONArray().apply {
+                        cur.shortcuts.forEach {
+                            put(JSONObject().put("id", it.id).put("label", it.label)
+                                .put("packageName", it.packageName).put("action", it.action))
+                        }
+                    })
+                File(ctx.filesDir, FILE).writeText(o.toString(2))
+            } catch (_: Exception) { }
         }
 
         fun ensureExternalTemplate(): String {

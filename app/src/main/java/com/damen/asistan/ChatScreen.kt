@@ -220,7 +220,10 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
                         IconButton(onClick = {
                             if (streaming && input.isBlank()) { client.abort(); return@IconButton }
                             if (input.isBlank() && pendingCount == 0) return@IconButton
-                            client.sendPrompt(input.trim(), pendingFiles)
+                            val text = input.trim()
+                            val n = pendingCount
+                            client.optimisticUser(text, n)
+                            client.sendPrompt(text, pendingFiles)
                             input = ""; pendingFiles = JSONArray(); pendingCount = 0
                         }) {
                             Icon(

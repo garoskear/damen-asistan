@@ -92,6 +92,12 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
 
     fun clearNotice() { _notice.value = null }
 
+    /** İyimser balon: settled gelene kadar kullanıcı kendi mesajını görür (web deseni). */
+    fun optimisticUser(text: String, fileCount: Int) {
+        val suffix = if (fileCount > 0) "\n[+$fileCount dosya]" else ""
+        _messages.value = _messages.value + ChatMsg("user", text + suffix)
+    }
+
     private fun forView(o: JSONObject): Boolean {
         if (!o.has("slot")) return true
         val s = try { o.getInt("slot") } catch (_: Exception) { return true }
