@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Damen Asistan</string>
+    <string name="power_service_desc">Damen kısayol çubuğundaki Güç tuşu sistem güç menüsünü açar.</string>
 </resources>

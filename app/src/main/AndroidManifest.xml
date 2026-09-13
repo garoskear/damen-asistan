@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Android 15+ LAN erişimi için (Kai'deki desen) -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <!-- Ekran yakalama servisi (API 34'te mediaProjection tipi şart) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <!-- Pill kısayolu Termux'u bulabilsin (API 30+ paket görünürlüğü) -->
     <queries>
@@ -19,7 +22,7 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.AppCompat.NoActionBar">
 
-        <!-- v1: ana sohbet içeriği. v2'de aynı activity'e ASSIST intent-filter eklenecek (Kai deseni). -->
+        <!-- Ana sohbet içeriği -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -30,7 +33,53 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Paylaş menüsü: metni sohbete doldurur (Kai deseni) -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
+
+        <!-- Asistan katmanı: varsayılan asistan çağrısı buraya düşer (Kai ASSIST deseni) -->
+        <activity
+            android:name=".AssistantActivity"
+            android:exported="true"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Damen.Translucent">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Ekran görüntüsü kırpma -->
+        <activity
+            android:name=".CropActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
+        <!-- Tek kare ekran yakalama (foreground, mediaProjection) -->
+        <service
+            android:name=".CaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!-- Güç menüsü kısayolu (GLOBAL_ACTION_POWER_DIALOG) -->
+        <service
+            android:name=".PowerService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

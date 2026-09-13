@@ -1,5 +1,6 @@
 package com.damen.asistan
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -45,11 +46,13 @@ class MainActivity : ComponentActivity() {
         } catch (_: Exception) { }
         val cfg = AsistanConfig.load(this)
         val extPath = AsistanConfig.ensureExternalTemplate()
+        shareText.value = consumeShare()
         setContent {
             MaterialTheme(colorScheme = DamenScheme) {
                 Surface(Modifier.fillMaxSize(), color = Damen.Bg) {
                     var token by remember { mutableStateOf(cfg.token) }
                     var showToken by remember { mutableStateOf(token.isBlank()) }
+                    var shared by shareText
                     if (showToken) {
                         Column(
                             Modifier.fillMaxSize()
@@ -81,11 +84,34 @@ class MainActivity : ComponentActivity() {
                             ) { Text("Bağlan") }
                         }
                     } else {
-                        ChatScreen(client, token) { showToken = true }
+                        ChatScreen(client, token, initialText = shared, onConsumedShare = { shared = "" }) { showToken = true }
                     }
                 }
             }
         }
+    }
+
+    /** Paylaş menüsü metni: bir kez al, tekrar uygulanmasın (Kai deseni). */
+    private val shareText = androidx.compose.runtime.mutableStateOf("")
+
+    private fun consumeShare(): String {
+        val v = if (intent?.action == Intent.ACTION_SEND) {
+            intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim() ?: ""
+        } else ""
+        // Dönüşte (rotasyon) tekrar düşmesin
+        try {
+            if (intent?.action == Intent.ACTION_SEND) {
+                intent.action = null
+                intent.removeExtra(Intent.EXTRA_TEXT)
+            }
+        } catch (_: Exception) { }
+        return v
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        shareText.value = consumeShare()
     }
 
     override fun onStart() {

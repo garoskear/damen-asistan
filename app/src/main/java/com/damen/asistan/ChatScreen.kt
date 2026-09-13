@@ -61,7 +61,7 @@ private fun srcTag(s: String) = when (s) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
+fun ChatScreen(client: GwClient, token: String, initialText: String = "", onConsumedShare: () -> Unit = {}, onTokenNeeded: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val prefs = remember { ctx.getSharedPreferences("damen", Context.MODE_PRIVATE) }
@@ -141,6 +141,14 @@ fun ChatScreen(client: GwClient, token: String, onTokenNeeded: () -> Unit) {
     LaunchedEffect(token) {
         if (token.isBlank()) onTokenNeeded()
         else { client.connect(token); client.listSessions() }
+    }
+
+    // Paylaş menüsünden gelen metin: alan boşsa doldur, bir kez (Kai deseni)
+    LaunchedEffect(initialText) {
+        if (initialText.isNotBlank() && input.isBlank()) {
+            input = initialText
+            onConsumedShare()
+        }
     }
 
     // Toast otomatik kapatma (hata 6sn, diğer 3sn)
