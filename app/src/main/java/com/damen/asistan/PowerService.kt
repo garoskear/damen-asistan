@@ -27,6 +27,8 @@ class PowerService : AccessibilityService() {
 
     companion object {
         private var ref = WeakReference<PowerService>(null)
+        private var capturing = false
+        private val lock = Any()
 
         fun isEnabled(): Boolean = ref.get() != null
 
@@ -36,58 +38,83 @@ class PowerService : AccessibilityService() {
             return try { s.performGlobalAction(GLOBAL_ACTION_POWER_DIALOG) } catch (_: Exception) { false }
         }
 
-        /** Android 11+ (API 30+) arka planda sessiz, doğrudan ekran görüntüsü alma.
-         *  Ağır iş (wrap/copy/compress) arka plan thread'inde; dosya atomik rename ile yayınlanır
-         *  (yarım yazılmış PNG'yi okuyan yarış durumu olmasın). */
+        /**
+         * Android 11+ (API 30+) arka planda sessiz ekran görüntüsü.
+         *
+         * KRİTİK: hardware buffer'dan software bitmap'e copy, RENDER THREAD'e bağlıdır —
+         * arka plan thread'inde yapılırsa bazı cihazlarda native SIGSEGV çökmesi olur
+         * (JVM yakalayamaz, crash.txt yazılmaz). Bu yüzden:
+         *   - wrap + copy → mainExecutor üzerinde (dokümante desen)
+         *   - PNG sıkıştırma + dosya yazma → arka plan thread'inde
+         * Ayrıca eşzamanlı iki takeScreenshot sistemi çökertebilir — `capturing` kilidi var.
+         */
         fun captureScreen(onComplete: (String?) -> Unit) {
             val s = ref.get()
             if (s == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
                 onComplete(null)
                 return
             }
+            val started = synchronized(lock) {
+                if (capturing) false else { capturing = true; true }
+            }
+            if (!started) { onComplete(null); return }
+            val finish = { p: String? -> synchronized(lock) { capturing = false }; onComplete(p) }
+
             try {
                 s.takeScreenshot(
                     Display.DEFAULT_DISPLAY,
                     s.mainExecutor,
                     object : TakeScreenshotCallback {
                         override fun onSuccess(result: ScreenshotResult) {
-                            Thread({
-                                try {
-                                    val hwBuffer = result.hardwareBuffer
-                                    if (hwBuffer == null) { onComplete(null); return@Thread }
-                                    val bmp = Bitmap.wrapHardwareBuffer(hwBuffer, result.colorSpace)
-                                    val software = bmp?.copy(Bitmap.Config.ARGB_8888, false)
-                                    try { hwBuffer.close() } catch (_: Exception) { }
-                                    try { bmp?.recycle() } catch (_: Exception) { }
-                                    if (software != null) {
-                                        val tmp = File(s.cacheDir, "auto_shot.tmp")
-                                        val out = File(s.cacheDir, "auto_shot.png")
-                                        FileOutputStream(tmp).use { fos ->
-                                            software.compress(Bitmap.CompressFormat.PNG, 95, fos)
-                                        }
-                                        software.recycle()
-                                        try { out.delete() } catch (_: Exception) { }
-                                        if (tmp.renameTo(out)) onComplete(out.absolutePath)
-                                        else onComplete(null)
-                                    } else {
-                                        onComplete(null)
-                                    }
-                                } catch (e: Exception) {
-                                    android.util.Log.w("DAMEN", "capture fail: ${e.message}")
-                                    onComplete(null)
+                            // COPY MAIN THREAD'DE (render-uyumlu) — native crash riski yok
+                            var software: Bitmap? = null
+                            try {
+                                val hw = result.hardwareBuffer
+                                if (hw != null) {
+                                    val wrapped = Bitmap.wrapHardwareBuffer(hw, result.colorSpace)
+                                    software = wrapped?.copy(Bitmap.Config.ARGB_8888, false)
+                                    try { wrapped?.recycle() } catch (_: Exception) { }
+                                    try { hw.close() } catch (_: Exception) { }
                                 }
-                            }, "damen-shot").start()
+                            } catch (e: Exception) {
+                                DamenLog.log("SHOT", "copy fail: ${e.message}")
+                                software = null
+                            }
+                            val soft = software
+                            if (soft != null && soft.width > 0 && soft.height > 0) {
+                                val path = File(s.cacheDir, "auto_shot.png").absolutePath
+                                Thread({
+                                    try {
+                                        val tmp = File(s.cacheDir, "auto_shot.tmp")
+                                        val out = File(path)
+                                        FileOutputStream(tmp).use { fos ->
+                                            soft.compress(Bitmap.CompressFormat.JPEG, 92, fos)
+                                        }
+                                        try { soft.recycle() } catch (_: Exception) { }
+                                        try { out.delete() } catch (_: Exception) { }
+                                        val ok = tmp.renameTo(out) || out.exists()
+                                        DamenLog.log("SHOT", "capture saved: $path ($ok)")
+                                        finish(if (ok) path else null)
+                                    } catch (e: Exception) {
+                                        DamenLog.log("SHOT", "save fail: ${e.message}")
+                                        finish(null)
+                                    }
+                                }, "damen-shot-write").start()
+                            } else {
+                                DamenLog.log("SHOT", "copy null: bitmap yok")
+                                finish(null)
+                            }
                         }
 
                         override fun onFailure(errorCode: Int) {
-                            android.util.Log.w("DAMEN", "capture onFailure: $errorCode")
-                            onComplete(null)
+                            DamenLog.log("SHOT", "takeScreenshot onFailure: $errorCode")
+                            finish(null)
                         }
-                    }
+                    },
                 )
             } catch (e: Exception) {
-                android.util.Log.w("DAMEN", "takeScreenshot fail: ${e.message}")
-                onComplete(null)
+                DamenLog.log("SHOT", "takeScreenshot exception: ${e.message}")
+                finish(null)
             }
         }
     }

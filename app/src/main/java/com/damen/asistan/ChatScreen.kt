@@ -45,6 +45,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -255,12 +256,11 @@ fun ChatScreen(
         }
     }
 
-    // Klavye açılınca içerik alanı küçülür — en alta yasla
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val imeBottom = WindowInsets.ime.getBottom(density)
-    LaunchedEffect(imeBottom) {
-        if (imeBottom > 0) scrollToBottom(animate = false)
-    }
+    // Klavye açılınca içerik alanı küçülür — en alta yasla.
+    // NOT: ime değerini gövdede okumak IME animasyonunun HER KARESİNDE tüm ekranı
+    // recompose ettiği için klavye lag'ı yaşanıyordu. Artık küçük bir bileşende
+    // izleniyor: yalnız o bileşen ucuz recompose olur, sohbet gövdesi değil.
+    ImeBottomSnap(onImeChange = { scrollToBottom(animate = false) })
 
     val history = remember {
         mutableListOf<String>().apply {
@@ -941,6 +941,17 @@ fun ChatScreen(
                 inputVal = TextFieldValue(nextText, TextRange(nextText.length))
             },
         )
+    }
+}
+
+/** IME değişimini dar kapsamda dinler — klavye animasyonunun her karesinde tüm
+ *  ChatScreen recompose olmaz (yalnız bu küçük bileşen). */
+@Composable
+private fun ImeBottomSnap(onImeChange: () -> Unit) {
+    val density = LocalDensity.current
+    val imeBottom = WindowInsets.ime.getBottom(density)
+    LaunchedEffect(imeBottom) {
+        if (imeBottom > 0) onImeChange()
     }
 }
 
