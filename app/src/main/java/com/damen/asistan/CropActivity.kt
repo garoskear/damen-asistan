@@ -8,6 +8,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
@@ -188,7 +190,7 @@ private fun CropBtn(text: String, border: Color, enabled: Boolean, onClick: () -
     androidx.compose.foundation.layout.Box(
         modifier = Modifier.background(Color(0xCC000000))
             .border(1.dp, if (enabled) border else Damen.LineDim)
-            .clickable(enabled = enabled, onClick = onClick)
+            .tap(enabled = enabled, onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -197,7 +199,7 @@ private fun CropBtn(text: String, border: Color, enabled: Boolean, onClick: () -
 }
 
 @Composable
-private fun Modifier.clickable(enabled: Boolean, onClick: () -> Unit): Modifier {
+private fun Modifier.tap(enabled: Boolean, onClick: () -> Unit): Modifier {
     return if (enabled) this.then(
         androidx.compose.foundation.clickable(
             interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },

@@ -48,7 +48,7 @@ import java.io.File
 class AssistantActivity : ComponentActivity() {
 
     private val client by lazy { GwClient() }
-    private var shotReceiver: BroadcastReceiver? = null
+    internal var shotReceiver: BroadcastReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
