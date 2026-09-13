@@ -51,7 +51,7 @@ class GwClient(private val scope: CoroutineScope = CoroutineScope(SupervisorJob(
         this.token = token
         disconnect()
         _conn.value = Conn.Connecting
-        val req = Request.Builder().url(GwConfig.wsUrl(token)).build()
+        val req = Request.Builder().url(AsistanConfig.wsUrl(token)).build()
         ws = http.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 _conn.value = Conn.Open
