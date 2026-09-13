@@ -182,22 +182,15 @@ fun ChatScreen(
     }
 
     var autoScrollEnabled by remember { mutableStateOf(true) }
-    var feedSizeRef by remember { mutableStateOf(0) }
-    var noticeCountRef by remember { mutableStateOf(0) }
-    var liveEmptyRef by remember { mutableStateOf(true) }
-    SideEffect {
-        feedSizeRef = feed.size
-        noticeCountRef = notices.size
-        liveEmptyRef = live.isEmpty()
-    }
 
-    fun snapBottom() {
+    suspend fun snapBottom() {
         val total = listState.layoutInfo.totalItemsCount
         if (total > 0) {
             try {
-                // AT_BOTTOM: son item viewport yüksekliğinden uzunsa DİBİNE hizalar —
-                // varsayılan AT_TOP son mesajın ortasına odaklıyordu (kök sorun).
-                listState.scrollToItem(total - 1, androidx.compose.foundation.lazy.ScrollToItemAlignment.AT_BOTTOM)
+                // Sondaki 1px boşluk item'ına AT_TOP kaydırmak clamp nedeniyle DAİMA gerçek dibe
+                // götürür (son mesaj ekrandan uzun olsa bile) — ScrollToItemAlignment bu
+                // sürümde yok, alignment yerine spacer numarası kullanılır.
+                listState.scrollToItem(total - 1)
             } catch (_: Exception) { }
         }
     }
@@ -205,10 +198,9 @@ fun ChatScreen(
     fun scrollToBottom(animate: Boolean = false) {
         autoScrollEnabled = true
         scope.launch {
-            val expected = feedSizeRef + noticeCountRef + (if (!liveEmptyRef) 1 else 0)
+            // +1: her zaman sonda duran 1px boşluk item'ı
+            val expected = feedSizeRef + noticeCountRef + (if (!liveEmptyRef) 1 else 0) + 1
             if (expected > 0) {
-                // Layout henüz yeni item'ları saymamışken scroll yapmak yanlış indekse
-                // götürüyor — hedef sayıya ulaşana kadar bekle.
                 withTimeoutOrNull(2000) {
                     snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it >= expected }
                 }
@@ -894,6 +886,8 @@ fun ChatScreen(
                                 }
                             }
                         }
+                        // DAİMA sonda duran 1px hedef item: scrollToItem(son) her koşulda gerçek dibe çeker
+                        item(key = "end") { Spacer(Modifier.height(1.dp)) }
                     }
                 }
 
